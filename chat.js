@@ -45,6 +45,9 @@ let activeTopicId = null;
 // by a "cancel" button (same spot) plus a "confirm" button to its left.
 let confirmingDeleteTopicId = null;
 let topicSearchQuery = "";
+// Topics whose generation finished while they weren't the one being viewed.
+// Intentionally in-memory only — never persisted, cleared by a page reload.
+let unreadTopicIds = new Set();
 // True while a compressTopic() call (auto-triggered or star-triggered) is in
 // flight; disables all star buttons and blocks new sends until it settles.
 let isSummarizing = false;
@@ -174,6 +177,7 @@ function createTopic() {
   };
   topics.unshift(topic);
   activeTopicId = topic.id;
+  markTopicRead(topic.id);
   saveTopics();
   renderTopicList();
   renderMessages();
@@ -184,8 +188,17 @@ function getActiveTopic() {
   return topics.find((t) => t.id === activeTopicId) || null;
 }
 
+// A topic stops being "unread" the moment it becomes the one being viewed,
+// however that happened (explicit selection, or a fallback after deleting
+// the topic that was active) — called right before the render that would
+// otherwise still show its badge.
+function markTopicRead(id) {
+  unreadTopicIds.delete(id);
+}
+
 function selectTopic(id) {
   activeTopicId = id;
+  markTopicRead(id);
   renderTopicList();
   renderMessages();
   updateHeader();
@@ -197,8 +210,10 @@ function deleteTopic(id, evt) {
   if (idx === -1) return;
   topics.splice(idx, 1);
   queuedMessages = queuedMessages.filter((message) => message.topicId !== id);
+  unreadTopicIds.delete(id);
   if (activeTopicId === id) {
     activeTopicId = topics.length ? topics[0].id : null;
+    if (activeTopicId) markTopicRead(activeTopicId);
   }
   if (confirmingDeleteTopicId === id) confirmingDeleteTopicId = null;
   saveTopics();
@@ -296,8 +311,26 @@ function renderTopicList() {
       starBtn.disabled = isStreaming || isSummarizing;
       starBtn.addEventListener("click", (e) => toggleStarTopic(topic.id, e));
 
-      item.appendChild(del);
-      item.appendChild(starBtn);
+      const actions = document.createElement("div");
+      actions.className = "topic-actions";
+      actions.append(del, starBtn);
+
+      // While this topic is generating (even in the background, not the one
+      // currently viewed), overlay a dots indicator on top of the star/delete
+      // slot; hovering the row hides it and reveals the normal buttons underneath.
+      if (isStreaming && activeRequest?.topicId === topic.id) {
+        const dots = document.createElement("div");
+        dots.className = "topic-generating-dots";
+        dots.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+        actions.appendChild(dots);
+      } else if (unreadTopicIds.has(topic.id)) {
+        const unreadBadge = document.createElement("div");
+        unreadBadge.className = "topic-unread-badge";
+        unreadBadge.innerHTML = '<span class="unread-dot"></span>';
+        actions.appendChild(unreadBadge);
+      }
+
+      item.appendChild(actions);
     }
 
     el.topicList.appendChild(item);
@@ -994,6 +1027,10 @@ async function sendMessage(text, queuedId = null) {
     abortReason = null;
     abortController = null;
     activeRequest = null;
+    // Flag as unread if this finished somewhere other than the topic the
+    // user is currently looking at (regardless of success, error, or
+    // timeout) — cleared the moment they actually open it.
+    if (topic.id !== activeTopicId) unreadTopicIds.add(topic.id);
     refreshComposerStreamingUI();
     refreshScrollIndicator();
     renderTopicList();

@@ -226,9 +226,82 @@ html, body {
 }
 .topic-star.starred:hover { background: rgba(245, 180, 0, 0.15); }
 .topic-star:disabled {
-  opacity: 0.25 !important;
   cursor: not-allowed;
   background: none !important;
+}
+/* Only actually dim it once the row is hovered — otherwise a disabled star
+   (which happens globally, on every topic, whenever anything anywhere is
+   generating/summarizing) would show faintly on rows nobody is even
+   pointing at, defeating the default "invisible until hover" behavior. */
+.topic-item:hover .topic-star:disabled {
+  opacity: 0.25 !important;
+}
+
+.topic-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Overlaid on top of the star/delete slot while this topic is generating in
+   the background; hovering the row fades it out to reveal the normal buttons
+   underneath (which already fade in on hover via their own opacity rules).
+   Needs an opaque background matching the row: the disabled star button
+   underneath still renders at 0.25 opacity (its :disabled rule uses
+   !important), which would otherwise show through around/behind the dots. */
+.topic-generating-dots {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  opacity: 1;
+  background: var(--sidebar-bg);
+  border-radius: 4px;
+  transition: opacity 0.15s ease;
+}
+.topic-item:hover .topic-generating-dots {
+  opacity: 0;
+  pointer-events: none;
+}
+/* Active row: match its blue background instead of the sidebar background,
+   and the shared dot-dim/dot-bright tokens (tuned for the normal sidebar
+   background) so the dots stay visible against it too. */
+.topic-item.active .topic-generating-dots {
+  background: var(--accent);
+  --dot-dim: rgba(255, 255, 255, 0.35);
+  --dot-bright: rgba(255, 255, 255, 0.95);
+}
+
+/* Marks a topic whose generation finished while it wasn't the one being
+   viewed; same overlay slot/hover-to-reveal behavior (and same need for an
+   opaque background) as the generating dots. Cleared (see markTopicRead)
+   the moment the topic is actually opened. */
+.topic-unread-badge {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  background: var(--sidebar-bg);
+  border-radius: 4px;
+  transition: opacity 0.15s ease;
+}
+.topic-item:hover .topic-unread-badge {
+  opacity: 0;
+  pointer-events: none;
+}
+.topic-item.active .topic-unread-badge {
+  background: var(--accent);
+}
+.unread-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #12b886;
 }
 
 .sidebar-footer {
