@@ -673,6 +673,15 @@ button.summary-divider-line:hover { color: var(--text); }
   white-space: normal;
 }
 
+.markdown-body li.md-task-item {
+  list-style: none;
+  margin-left: -1.3em;
+}
+.markdown-body li.md-task-item input[type="checkbox"] {
+  margin-right: 0.3em;
+  vertical-align: -2px;
+}
+
 .markdown-body code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.88em;
@@ -713,6 +722,44 @@ button.summary-divider-line:hover { color: var(--text); }
   text-decoration: underline;
 }
 .message-row.user .markdown-body a { color: inherit; }
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 8px;
+  display: block;
+  margin: 0.4em 0;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.92em;
+  max-width: 100%;
+  overflow-x: auto;
+  display: block;
+}
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: 0.4em 0.7em;
+}
+.markdown-body th {
+  background: rgba(127, 127, 127, 0.12);
+  font-weight: 700;
+}
+
+.markdown-body .md-footnote-ref {
+  color: var(--accent);
+  font-size: 0.75em;
+  margin: 0 0.1em;
+}
+.markdown-body .md-footnote-def {
+  font-size: 0.85em;
+  color: var(--text-muted);
+}
+.markdown-body .md-footnote-def sup {
+  margin-right: 0.3em;
+}
 
 .empty-state {
   text-align: center;
