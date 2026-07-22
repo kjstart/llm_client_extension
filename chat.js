@@ -251,36 +251,41 @@ function renderTopicList() {
 
       const confirmBtn = document.createElement("button");
       confirmBtn.className = "topic-delete-confirm";
-      confirmBtn.textContent = "✓";
+      confirmBtn.innerHTML = '<span class="confirm-glyph">✓</span>';
       confirmBtn.title = t("topic.delete_confirm_title");
       confirmBtn.addEventListener("click", (e) => deleteTopic(topic.id, e));
 
-      // Same position the original delete button occupied, so a second rapid
-      // click (double-click) lands here and cancels instead of confirming.
+      // Same position the delete button occupies (leftmost of the pair), so a
+      // second rapid click (double-click) lands here and cancels instead of
+      // confirming. Confirm sits to its right, where the star button normally
+      // is, so confirming requires a deliberate mouse move.
       const cancelBtn = document.createElement("button");
       cancelBtn.className = "topic-delete";
       cancelBtn.textContent = "↩";
       cancelBtn.title = t("topic.delete_cancel_title");
       cancelBtn.addEventListener("click", (e) => cancelDeleteTopic(e));
 
-      item.appendChild(confirmBtn);
       item.appendChild(cancelBtn);
+      item.appendChild(confirmBtn);
     } else {
+      const del = document.createElement("button");
+      del.className = "topic-delete";
+      del.title = t("topic.delete_title");
+      del.innerHTML =
+        '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+        '<path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5" ' +
+        'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      del.addEventListener("click", (e) => requestDeleteTopic(topic.id, e));
+
       const starBtn = document.createElement("button");
       starBtn.className = "topic-star" + (topic.starred ? " starred" : "");
-      starBtn.textContent = "★";
+      starBtn.innerHTML = '<span class="star-glyph">★</span>';
       starBtn.title = t(topic.starred ? "topic.unstar_title" : "topic.star_title");
       starBtn.disabled = isStreaming || isSummarizing;
       starBtn.addEventListener("click", (e) => toggleStarTopic(topic.id, e));
 
-      const del = document.createElement("button");
-      del.className = "topic-delete";
-      del.textContent = "✕";
-      del.title = t("topic.delete_title");
-      del.addEventListener("click", (e) => requestDeleteTopic(topic.id, e));
-
-      item.appendChild(starBtn);
       item.appendChild(del);
+      item.appendChild(starBtn);
     }
 
     el.topicList.appendChild(item);
@@ -1354,9 +1359,6 @@ el.fontIncreaseBtn.addEventListener("click", () => adjustFontSize(FONT_SIZE_STEP
 el.widthToggleBtn.addEventListener("click", cycleChatWidth);
 el.closeSettingsBtn.addEventListener("click", closeSettings);
 el.saveSettingsBtn.addEventListener("click", handleSaveSettings);
-el.settingsModal.addEventListener("click", (e) => {
-  if (e.target === el.settingsModal) closeSettings();
-});
 el.modelList.addEventListener("input", () => {
   const models = el.modelList.value
     .split(",")

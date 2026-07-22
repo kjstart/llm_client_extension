@@ -152,6 +152,19 @@ html, body {
   outline: none;
 }
 
+/* Shared fixed-size box so the delete/star icons always match in size and
+   are vertically centered regardless of glyph (text star vs. SVG trash). */
+.topic-delete,
+.topic-star,
+.topic-delete-confirm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
 .topic-delete {
   opacity: 0;
   background: none;
@@ -159,7 +172,7 @@ html, body {
   color: inherit;
   cursor: pointer;
   font-size: 13px;
-  padding: 2px 4px;
+  padding: 0;
   border-radius: 4px;
 }
 .topic-item:hover .topic-delete { opacity: 0.7; }
@@ -178,24 +191,35 @@ html, body {
   cursor: pointer;
   font-size: 13px;
   font-weight: 700;
-  padding: 2px 4px;
+  padding: 0;
   border-radius: 4px;
 }
 .topic-delete-confirm:hover { opacity: 1; background: rgba(224, 49, 49, 0.15); }
 
-/* Star: "use this topic's summary as a system prompt for other chats". */
+/* Star: "use this topic's summary as a system prompt for other chats". Sized
+   up a bit since the "★" glyph otherwise reads smaller than the trash icon.
+   The glyph itself (not the button, so its hover background stays put) is
+   nudged up to correct its lower optical center relative to the trash icon. */
 .topic-star {
   opacity: 0;
   background: none;
   border: none;
   color: inherit;
   cursor: pointer;
-  font-size: 13px;
-  padding: 2px 4px;
+  font-size: 17px;
+  padding: 0;
   border-radius: 4px;
 }
 .topic-item:hover .topic-star { opacity: 0.7; }
 .topic-star:hover { opacity: 1 !important; background: rgba(0,0,0,0.15); }
+.star-glyph {
+  position: relative;
+  top: -2px;
+}
+.confirm-glyph {
+  position: relative;
+  top: -1px;
+}
 .topic-star.starred {
   opacity: 1;
   color: #f5b400;
@@ -379,16 +403,19 @@ html, body {
 }
 .floating-indicator.hidden { display: none; }
 
+/* Flat "liquid glass" look: even frosted fill + a thin uniform rim highlight
+   (inset 0 0 0 1px) instead of a directional gloss patch, so there's no
+   single bright highlight sitting at one spot on the circle. */
 .scroll-indicator-btn {
   overflow: hidden;
   isolation: isolate;
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.45);
-  background: rgba(255, 255, 255, 0.28);
-  backdrop-filter: blur(18px) saturate(180%);
-  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  border: none;
+  background: rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
   color: var(--text);
   font-size: 16px;
   display: flex;
@@ -397,42 +424,31 @@ html, body {
   cursor: pointer;
   padding: 0;
   box-shadow:
-    0 8px 20px rgba(0, 0, 0, 0.18),
-    inset 0 1px 1px rgba(255, 255, 255, 0.75),
-    inset 0 -6px 10px rgba(0, 0, 0, 0.06);
-  transition: bottom 0.15s ease, box-shadow 0.15s ease;
-}
-.scroll-indicator-btn::before {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 6px;
-  right: 6px;
-  height: 42%;
-  border-radius: 50% 50% 60% 60% / 100% 100% 45% 45%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0));
-  pointer-events: none;
+    0 4px 14px rgba(0, 0, 0, 0.12),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+  transition: bottom 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 .scroll-indicator-btn:hover {
   bottom: 18px;
+  background: rgba(255, 255, 255, 0.22);
   box-shadow:
-    0 10px 24px rgba(0, 0, 0, 0.22),
-    inset 0 1px 1px rgba(255, 255, 255, 0.85),
-    inset 0 -6px 10px rgba(0, 0, 0, 0.08);
+    0 6px 18px rgba(0, 0, 0, 0.16),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.38);
 }
 .scroll-indicator-btn:active { bottom: 16px; }
 
 @media (prefers-color-scheme: dark) {
   .scroll-indicator-btn {
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    background: rgba(60, 60, 68, 0.35);
+    background: rgba(255, 255, 255, 0.07);
     box-shadow:
-      0 8px 20px rgba(0, 0, 0, 0.45),
-      inset 0 1px 1px rgba(255, 255, 255, 0.12),
-      inset 0 -6px 10px rgba(0, 0, 0, 0.25);
+      0 4px 14px rgba(0, 0, 0, 0.4),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.1);
   }
-  .scroll-indicator-btn::before {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0));
+  .scroll-indicator-btn:hover {
+    background: rgba(255, 255, 255, 0.11);
+    box-shadow:
+      0 6px 18px rgba(0, 0, 0, 0.45),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.16);
   }
 }
 
@@ -445,7 +461,6 @@ html, body {
 .btn-arrow {
   display: block;
   z-index: 1;
-  filter: drop-shadow(0 1px 0.5px rgba(255, 255, 255, 0.5));
 }
 
 .scroll-indicator-btn.generating .btn-dots { display: flex; }
