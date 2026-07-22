@@ -13,7 +13,7 @@ const DEFAULT_SETTINGS = {
   extraParams: "",
   chatFontSize: 14.5,
   sidebarCollapsed: false,
-  chatWide: false,
+  chatWidthLevel: "normal", // "narrow" (60%) | "normal" (80%) | "wide" (100%)
   autoLockMinutes: 2,
 };
 
@@ -21,6 +21,7 @@ const DEFAULT_SETTINGS = {
 const PROTECTED_BODY_KEYS = ["model", "messages", "stream"];
 
 const BOTTOM_THRESHOLD = 80;
+const CHAT_WIDTH_LEVELS = ["narrow", "normal", "wide"];
 const FONT_SIZE_MIN = 12;
 const FONT_SIZE_MAX = 22;
 const FONT_SIZE_STEP = 1;
@@ -287,12 +288,16 @@ function adjustFontSize(delta) {
 // ---------- Chat width ----------
 
 function applyChatWidth() {
-  el.app.classList.toggle("chat-wide", !!settings.chatWide);
-  el.widthToggleBtn.classList.toggle("is-wide", !!settings.chatWide);
+  const level = CHAT_WIDTH_LEVELS.includes(settings.chatWidthLevel) ? settings.chatWidthLevel : "normal";
+  el.app.classList.toggle("chat-width-narrow", level === "narrow");
+  el.app.classList.toggle("chat-width-wide", level === "wide");
+  el.widthToggleBtn.dataset.widthState = level;
 }
 
-function toggleChatWidth() {
-  settings.chatWide = !settings.chatWide;
+function cycleChatWidth() {
+  const current = CHAT_WIDTH_LEVELS.includes(settings.chatWidthLevel) ? settings.chatWidthLevel : "normal";
+  const next = CHAT_WIDTH_LEVELS[(CHAT_WIDTH_LEVELS.indexOf(current) + 1) % CHAT_WIDTH_LEVELS.length];
+  settings.chatWidthLevel = next;
   applyChatWidth();
   saveSettings();
 }
@@ -1041,7 +1046,7 @@ el.settingsBtn.addEventListener("click", openSettings);
 el.sidebarToggleBtn.addEventListener("click", toggleSidebar);
 el.fontDecreaseBtn.addEventListener("click", () => adjustFontSize(-FONT_SIZE_STEP));
 el.fontIncreaseBtn.addEventListener("click", () => adjustFontSize(FONT_SIZE_STEP));
-el.widthToggleBtn.addEventListener("click", toggleChatWidth);
+el.widthToggleBtn.addEventListener("click", cycleChatWidth);
 el.closeSettingsBtn.addEventListener("click", closeSettings);
 el.saveSettingsBtn.addEventListener("click", handleSaveSettings);
 el.settingsModal.addEventListener("click", (e) => {

@@ -1,5 +1,5 @@
 :root {
-  --bg: #ffffff;
+  --bg: rgb(252, 252, 252);
   --sidebar-bg: #f7f7f8;
   --border: #e5e5e8;
   --text: #1f1f1f;
@@ -8,8 +8,6 @@
   --accent-hover: #3d5ce0;
   --bubble-user: #4c6ef5;
   --bubble-user-text: #ffffff;
-  --bubble-assistant: #f1f1f4;
-  --bubble-assistant-text: #1f1f1f;
   --danger: #e03131;
   --dot-dim: rgba(60, 60, 68, 0.25);
   --dot-bright: rgba(30, 30, 35, 0.9);
@@ -24,8 +22,6 @@
     --text-muted: #9a9aa2;
     --bubble-user: #4c6ef5;
     --bubble-user-text: #ffffff;
-    --bubble-assistant: #2a2a2e;
-    --bubble-assistant-text: #ececec;
     --dot-dim: rgba(255, 255, 255, 0.22);
     --dot-bright: rgba(255, 255, 255, 0.95);
   }
@@ -53,9 +49,12 @@ html, body {
 }
 .app.hidden { display: none; }
 
-/* User-triggered "widen" mode: use the full available width. */
-.app.chat-wide {
+/* Three-level chat width: 80% (default), 100% (wide), 60% (narrow). */
+.app.chat-width-wide {
   --content-max-width: 100%;
+}
+.app.chat-width-narrow {
+  --content-max-width: 60%;
 }
 
 /* Sidebar */
@@ -237,10 +236,17 @@ html, body {
   padding: 2px;
 }
 
-/* Chat-width toggle: swaps a "narrow" bracket icon for a "wide" one. */
-.width-toggle-btn .width-icon-wide { display: none; }
-.width-toggle-btn.is-wide .width-icon-narrow { display: none; }
-.width-toggle-btn.is-wide .width-icon-wide { display: block; }
+/* Chat-width toggle: shows the bracket icon matching the current width level. */
+.width-toggle-btn .width-icon-narrow,
+.width-toggle-btn .width-icon-normal,
+.width-toggle-btn .width-icon-wide {
+  display: none;
+}
+.width-toggle-btn[data-width-state="narrow"] .width-icon-narrow,
+.width-toggle-btn[data-width-state="normal"] .width-icon-normal,
+.width-toggle-btn[data-width-state="wide"] .width-icon-wide {
+  display: block;
+}
 
 .font-btn {
   width: 26px;
@@ -433,10 +439,16 @@ html, body {
   border-bottom-right-radius: 4px;
 }
 
+/* Assistant messages render as plain text directly on the background, no bubble. */
 .message-row.assistant .bubble {
-  background: var(--bubble-assistant);
-  color: var(--bubble-assistant-text);
-  border-bottom-left-radius: 4px;
+  max-width: 100%;
+  padding: 0;
+  background: none;
+  color: var(--text);
+  border-radius: 0;
+}
+.message-row.assistant .bubble.typing {
+  padding: 15px 20px;
 }
 
 .message-row.queued .queued-bubble {
