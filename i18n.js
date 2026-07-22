@@ -44,7 +44,7 @@ const MESSAGES = {
     "settings.freq_penalty": "Frequency Penalty",
     "settings.system_prompt": "System Prompt（可选）",
     "settings.system_prompt_placeholder": "你是一个乐于助人的助手。",
-    "settings.extra_params": "额外参数 / Extra Params（JSON，可选）",
+    "settings.extra_params": "额外参数（JSON，可选）",
     "settings.extra_params_hint":
       "合并进请求体，支持任意 OpenAI 兼容参数。<code>model</code>/<code>messages</code>/<code>stream</code> 由客户端管理无法覆盖；将某个标准参数设为 <code>null</code>（如 <code>{\"temperature\": null}</code>）可在本次请求中省略它。",
     "settings.password": "密码保护",
@@ -53,7 +53,7 @@ const MESSAGES = {
     "settings.save": "保存",
 
     "pwd.status_disabled": "未启用——数据以明文存储在本地",
-    "pwd.status_enabled": "已启用——对话记录与设置已用 AES-256-GCM 加密存储",
+    "pwd.status_enabled": "已启用——对话记录与设置已加密存储",
     "pwd.new_placeholder1": "设置密码（至少 4 位）",
     "pwd.new_placeholder2": "确认密码",
     "pwd.enable": "启用密码保护",

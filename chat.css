@@ -174,18 +174,14 @@ html, body {
   opacity: 0.85;
   background: none;
   border: none;
-  color: var(--danger);
+  color: inherit;
   cursor: pointer;
   font-size: 13px;
+  font-weight: 700;
   padding: 2px 4px;
   border-radius: 4px;
 }
 .topic-delete-confirm:hover { opacity: 1; background: rgba(224, 49, 49, 0.15); }
-
-/* On the active (blue) topic, match the confirm button's text color to the
-   cancel button's (both white) instead of the red danger color. */
-.topic-item.active .topic-delete-confirm { color: inherit; }
-.topic-item.active .topic-delete-confirm:hover { background: rgba(0, 0, 0, 0.15); }
 
 .sidebar-footer {
   border-top: 1px solid var(--border);

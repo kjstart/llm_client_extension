@@ -141,7 +141,7 @@
         </label>
 
         <label class="field">
-          <span data-i18n="settings.extra_params">额外参数 / Extra Params（JSON，可选）</span>
+          <span data-i18n="settings.extra_params">额外参数（JSON，可选）</span>
           <textarea id="extraParams" rows="4" spellcheck="false"
             placeholder='{&#10;  "thinking": { "type": "enabled" },&#10;  "reasoning_effort": "high"&#10;}'></textarea>
           <small class="field-hint" data-i18n-html="settings.extra_params_hint">合并进请求体，支持任意 OpenAI 兼容参数。<code>model</code>/<code>messages</code>/<code>stream</code> 由客户端管理无法覆盖；将某个标准参数设为 <code>null</code>（如 <code>{"temperature": null}</code>）可在本次请求中省略它。</small>
