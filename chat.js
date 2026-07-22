@@ -13,12 +13,12 @@ const DEFAULT_SETTINGS = {
   extraParams: "",
   chatFontSize: 14.5,
   sidebarCollapsed: false,
+  autoLockMinutes: 2,
 };
 
 // Request-body keys the client always controls; extra params can never override them.
 const PROTECTED_BODY_KEYS = ["model", "messages", "stream"];
 
-const IDLE_LOCK_MS = 10 * 60 * 1000;
 const BOTTOM_THRESHOLD = 80;
 const FONT_SIZE_MIN = 12;
 const FONT_SIZE_MAX = 22;
@@ -40,6 +40,9 @@ let activeRequest = null; // { topicId: string, assistantText: string, bubble: H
 // cryptoState is non-null only while a password-protected session is unlocked.
 let cryptoState = null; // { key: CryptoKey, salt: Uint8Array }
 let idleTimer = null;
+let isAppLocked = false;
+const composingInputs = new WeakSet();
+const compositionJustEndedInputs = new WeakSet();
 
 const el = {
   app: document.querySelector(".app"),
@@ -70,6 +73,7 @@ const el = {
   systemPrompt: document.getElementById("systemPrompt"),
   extraParams: document.getElementById("extraParams"),
   extraParamsMsg: document.getElementById("extraParamsMsg"),
+  autoLockMinutes: document.getElementById("autoLockMinutes"),
 
   passwordStatus: document.getElementById("passwordStatus"),
   passwordSetupForm: document.getElementById("passwordSetupForm"),
@@ -205,6 +209,7 @@ function startRenameTopic(topic, titleSpan) {
   input.type = "text";
   input.className = "topic-rename-input";
   input.value = topic.title;
+  installImeGuard(input);
   titleSpan.replaceWith(input);
   input.focus();
   input.select();
@@ -231,6 +236,7 @@ function startRenameTopic(topic, titleSpan) {
   input.addEventListener("dblclick", (e) => e.stopPropagation());
   input.addEventListener("blur", commit);
   input.addEventListener("keydown", (e) => {
+    if (isImeConfirming(e)) return;
     if (e.key === "Enter") {
       e.preventDefault();
       commit();
@@ -443,7 +449,7 @@ function submitComposerMessage() {
 }
 
 function drainMessageQueue() {
-  if (isStreaming || queuedMessages.length === 0) return;
+  if (isAppLocked || isStreaming || queuedMessages.length === 0) return;
   const next = queuedMessages[0];
   void sendMessage(next.content, next.id);
 }
@@ -593,6 +599,9 @@ async function sendMessage(text, queuedId = null) {
     topic.messages.push({ role: "assistant", content: assistantText });
     await saveTopics();
   } catch (err) {
+    // Auto-lock aborts the request without rendering or persisting a response
+    // after the decrypted session has already been cleared.
+    if (err.name === "AbortError" && abortReason === "lock") return;
     let message;
     if (err.name === "AbortError") {
       message = abortReason === "timeout"
@@ -702,6 +711,36 @@ function autoResizeInput() {
   el.input.style.height = Math.min(el.input.scrollHeight, 200) + "px";
 }
 
+// Tracks text composition per input so Enter used to accept an IME candidate
+// never leaks into an Enter-based application shortcut.
+function installImeGuard(input) {
+  input.addEventListener("compositionstart", () => {
+    composingInputs.add(input);
+    compositionJustEndedInputs.delete(input);
+  });
+  input.addEventListener("compositionend", () => {
+    composingInputs.delete(input);
+    // Some IME/browser combinations dispatch compositionend immediately before
+    // the confirming keydown. Preserve the guard through the current task.
+    compositionJustEndedInputs.add(input);
+    setTimeout(() => compositionJustEndedInputs.delete(input), 0);
+  });
+  input.addEventListener("blur", () => {
+    composingInputs.delete(input);
+    compositionJustEndedInputs.delete(input);
+  });
+}
+
+function isImeConfirming(event) {
+  const input = event.currentTarget;
+  // keyCode 229 is deprecated, but remains a useful Chrome compatibility
+  // signal for key events whose value is being handled by an IME.
+  return event.isComposing ||
+    composingInputs.has(input) ||
+    compositionJustEndedInputs.has(input) ||
+    event.keyCode === 229;
+}
+
 // Toggles the send button into a stop control (square icon) while generating.
 function setComposerStreaming(streaming) {
   el.sendBtn.classList.toggle("is-stop", streaming);
@@ -728,6 +767,7 @@ function openSettings() {
   el.systemPrompt.value = settings.systemPrompt;
   el.extraParams.value = settings.extraParams || "";
   el.extraParamsMsg.textContent = "";
+  el.autoLockMinutes.value = settings.autoLockMinutes || DEFAULT_SETTINGS.autoLockMinutes;
   populateDefaultModelSelect(settings.models, settings.defaultModel);
   refreshPasswordUI();
   el.settingsModal.classList.remove("hidden");
@@ -783,12 +823,17 @@ async function handleSaveSettings() {
     freqPenalty: Number(el.freqPenalty.value),
     systemPrompt: el.systemPrompt.value,
     extraParams: extraRaw.trim(),
+    autoLockMinutes: Math.min(
+      1440,
+      Math.max(1, Number(el.autoLockMinutes.value) || DEFAULT_SETTINGS.autoLockMinutes)
+    ),
   };
 
   await saveSettings();
   populateModelSelect();
   updateHeader();
   closeSettings();
+  resetIdleTimer();
   drainMessageQueue();
 }
 
@@ -903,6 +948,7 @@ async function handleDisablePassword() {
 // ---------- Lock screen ----------
 
 function showLockScreen() {
+  isAppLocked = true;
   el.lockScreen.classList.remove("hidden");
   el.app.classList.add("hidden");
   el.unlockError.textContent = "";
@@ -911,12 +957,17 @@ function showLockScreen() {
 }
 
 function hideLockScreen() {
+  isAppLocked = false;
   el.lockScreen.classList.add("hidden");
   el.app.classList.remove("hidden");
 }
 
 function lockApp() {
   if (!cryptoState) return;
+  if (isStreaming && abortController) {
+    abortReason = "lock";
+    abortController.abort();
+  }
   cryptoState = null;
   settings = { ...DEFAULT_SETTINGS };
   topics = [];
@@ -945,6 +996,7 @@ async function handleUnlock() {
     cryptoState = { key, salt };
     hideLockScreen();
     startApp();
+    drainMessageQueue();
   } catch (e) {
     el.unlockError.textContent = t("unlock.wrong");
   }
@@ -953,12 +1005,19 @@ async function handleUnlock() {
 function resetIdleTimer() {
   clearTimeout(idleTimer);
   if (!cryptoState) return;
-  idleTimer = setTimeout(lockApp, IDLE_LOCK_MS);
+  const minutes = Math.min(
+    1440,
+    Math.max(1, Number(settings.autoLockMinutes) || DEFAULT_SETTINGS.autoLockMinutes)
+  );
+  idleTimer = setTimeout(lockApp, minutes * 60 * 1000);
 }
 
-["click", "keydown", "mousemove", "scroll", "input"].forEach((evt) => {
+["click", "keydown", "mousemove", "input"].forEach((evt) => {
   document.addEventListener(evt, resetIdleTimer, { passive: true });
 });
+// Scroll events from nested scroll containers do not bubble. Capture them so
+// scrolling the message list or settings modal also resets the idle timer.
+document.addEventListener("scroll", resetIdleTimer, { passive: true, capture: true });
 
 // ---------- Events ----------
 
@@ -985,7 +1044,9 @@ el.changePasswordBtn.addEventListener("click", handleChangePassword);
 el.disablePasswordBtn.addEventListener("click", handleDisablePassword);
 
 el.unlockBtn.addEventListener("click", handleUnlock);
+installImeGuard(el.unlockPassword);
 el.unlockPassword.addEventListener("keydown", (e) => {
+  if (isImeConfirming(e)) return;
   if (e.key === "Enter") {
     e.preventDefault();
     handleUnlock();
@@ -999,7 +1060,12 @@ el.sendBtn.addEventListener("click", () => {
     submitComposerMessage();
   }
 });
+installImeGuard(el.input);
 el.input.addEventListener("keydown", (e) => {
+  // During IME composition, Enter confirms/converts the current candidate; it
+  // must never be interpreted as the chat's send shortcut. keyCode 229 is a
+  // deprecated but still useful Chrome fallback for certain IME integrations.
+  if (isImeConfirming(e)) return;
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     submitComposerMessage();

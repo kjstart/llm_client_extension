@@ -777,6 +777,18 @@ html, body {
   color: var(--text-muted);
 }
 
+.auto-lock-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+}
+.auto-lock-field input {
+  width: 92px;
+  box-sizing: border-box;
+}
+
 .password-form {
   display: flex;
   flex-direction: column;

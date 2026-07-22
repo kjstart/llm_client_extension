@@ -43,6 +43,8 @@ const MESSAGES = {
     "settings.extra_params_hint":
       "合并进请求体，支持任意 OpenAI 兼容参数。<code>model</code>/<code>messages</code>/<code>stream</code> 由客户端管理无法覆盖；将某个标准参数设为 <code>null</code>（如 <code>{\"temperature\": null}</code>）可在本次请求中省略它。",
     "settings.password": "密码保护",
+    "settings.auto_lock": "无操作自动锁定（分钟）",
+    "settings.auto_lock_hint": "点击、输入、鼠标移动和滚动都会重新开始计时；仅在启用密码保护后生效。",
     "settings.save": "保存",
 
     "pwd.status_disabled": "未启用——数据以明文存储在本地",
@@ -117,6 +119,8 @@ const MESSAGES = {
     "settings.extra_params_hint":
       "Merged into the request body — any OpenAI-compatible parameter works. <code>model</code>/<code>messages</code>/<code>stream</code> are client-managed and cannot be overridden; set a standard param to <code>null</code> (e.g. <code>{\"temperature\": null}</code>) to omit it for the request.",
     "settings.password": "Password protection",
+    "settings.auto_lock": "Auto-lock after inactivity (minutes)",
+    "settings.auto_lock_hint": "Clicking, typing, moving the pointer, or scrolling restarts the timer. Only applies when password protection is enabled.",
     "settings.save": "Save",
 
     "pwd.status_disabled": "Disabled — data is stored locally in plain text.",

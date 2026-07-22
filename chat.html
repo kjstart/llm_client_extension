@@ -134,6 +134,12 @@
           <span data-i18n="settings.password">密码保护</span>
           <div id="passwordStatus" class="password-status">未启用——数据以明文存储在本地</div>
 
+          <label class="auto-lock-field">
+            <span data-i18n="settings.auto_lock">无操作自动锁定（分钟）</span>
+            <input id="autoLockMinutes" type="number" min="1" max="1440" step="1" value="2" />
+          </label>
+          <small class="field-hint" data-i18n="settings.auto_lock_hint">点击、输入、鼠标移动和滚动都会重新开始计时；仅在启用密码保护后生效。</small>
+
           <div id="passwordSetupForm" class="password-form hidden">
             <input id="newPassword1" type="password" data-i18n-placeholder="pwd.new_placeholder1" placeholder="设置密码（至少 4 位）" autocomplete="new-password" />
             <input id="newPassword2" type="password" data-i18n-placeholder="pwd.new_placeholder2" placeholder="确认密码" autocomplete="new-password" />
