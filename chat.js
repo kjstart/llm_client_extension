@@ -346,7 +346,11 @@ function updateHeader() {
   el.chatTitle.textContent = topic ? topic.title : t("topic.default_title");
   populateModelSelect();
   if (topic) {
-    el.modelSelect.value = topic.model || settings.defaultModel;
+    // A topic's model is only "locked in" once it has actually sent a message
+    // (see sendMessage); before that, it should keep tracking the current
+    // default so changing the default in Settings is reflected immediately.
+    const effectiveModel = topic.messages.length > 0 ? topic.model : settings.defaultModel;
+    el.modelSelect.value = effectiveModel || settings.defaultModel;
   }
   // The active topic just (potentially) changed — the send button must reflect
   // whether *this* topic is generating, not whatever topic is streaming globally.
@@ -1451,12 +1455,12 @@ function startApp() {
   applyFontSize();
   applyChatWidth();
   populateModelSelect();
-  renderTopicList();
 
   if (topics.length === 0) {
-    createTopic();
+    createTopic(); // sets activeTopicId and renders the topic list itself
   } else {
     activeTopicId = topics[0].id;
+    renderTopicList();
     renderMessages();
     updateHeader();
   }
