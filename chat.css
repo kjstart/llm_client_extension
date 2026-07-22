@@ -954,6 +954,17 @@ button.summary-divider-line:hover { color: var(--text); }
 }
 .danger-btn:hover { background: rgba(224, 49, 49, 0.1); }
 
+.secondary-btn {
+  padding: 9px 20px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+}
+.secondary-btn:hover { background: var(--border); }
+
 /* Password protection */
 .password-status {
   font-size: 13px;
@@ -994,6 +1005,18 @@ button.summary-divider-line:hover { color: var(--text); }
   min-height: 16px;
   color: var(--danger);
 }
+
+.import-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12.5px;
+  min-height: 16px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.import-status.error { color: var(--danger); }
 
 .settings-credit {
   margin-top: 4px;

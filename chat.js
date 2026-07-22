@@ -76,6 +76,7 @@ const el = {
   fontDecreaseBtn: document.getElementById("fontDecreaseBtn"),
   fontIncreaseBtn: document.getElementById("fontIncreaseBtn"),
   widthToggleBtn: document.getElementById("widthToggleBtn"),
+  exportTopicBtn: document.getElementById("exportTopicBtn"),
   modelSelect: document.getElementById("modelSelect"),
   messages: document.getElementById("messages"),
   scrollIndicatorBtn: document.getElementById("scrollIndicatorBtn"),
@@ -111,6 +112,11 @@ const el = {
   changePasswordBtn: document.getElementById("changePasswordBtn"),
   disablePasswordBtn: document.getElementById("disablePasswordBtn"),
   passwordMsg: document.getElementById("passwordMsg"),
+
+  exportAllBtn: document.getElementById("exportAllBtn"),
+  importBtn: document.getElementById("importBtn"),
+  importFileInput: document.getElementById("importFileInput"),
+  importStatus: document.getElementById("importStatus"),
 
   lockScreen: document.getElementById("lockScreen"),
   unlockPassword: document.getElementById("unlockPassword"),
@@ -1219,6 +1225,106 @@ async function handleSaveSettings() {
   drainMessageQueue();
 }
 
+// ---------- Export / Import ----------
+
+function topicToExportData(topic) {
+  return {
+    title: topic.title,
+    messages: topic.messages.map((m) => ({ role: m.role, content: m.content })),
+  };
+}
+
+async function exportCurrentTopic() {
+  const topic = getActiveTopic();
+  if (!topic) return;
+  const html = await buildExportHtml([topicToExportData(topic)]);
+  downloadHtmlFile(sanitizeFilename(topic.title) + ".html", html);
+}
+
+async function exportAllTopics() {
+  if (topics.length === 0) {
+    showToast(t("data.no_topics"));
+    return;
+  }
+  const html = await buildExportHtml(topics.map(topicToExportData));
+  const dateStr = new Date().toISOString().slice(0, 10);
+  downloadHtmlFile(`llm-chat-export-${dateStr}.html`, html);
+}
+
+// Parsed import data awaiting user confirmation before it's committed to `topics`.
+let pendingImportData = null;
+
+function clearImportStatus() {
+  el.importStatus.classList.remove("error");
+  el.importStatus.innerHTML = "";
+}
+
+function showImportError(message) {
+  pendingImportData = null;
+  el.importStatus.classList.add("error");
+  el.importStatus.textContent = message;
+}
+
+function showImportConfirm(count) {
+  clearImportStatus();
+  const msg = document.createElement("span");
+  msg.textContent = t("data.import_found", { count });
+
+  const confirmBtn = document.createElement("button");
+  confirmBtn.className = "primary-btn small-btn";
+  confirmBtn.textContent = t("data.import_confirm");
+  confirmBtn.addEventListener("click", commitImport);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "secondary-btn small-btn";
+  cancelBtn.textContent = t("data.import_cancel");
+  cancelBtn.addEventListener("click", clearImportStatus);
+
+  el.importStatus.append(msg, confirmBtn, cancelBtn);
+}
+
+function commitImport() {
+  if (!pendingImportData) return;
+  const newTopics = pendingImportData.map((entry) => ({
+    id: genId(),
+    title: entry.title,
+    createdAt: Date.now(),
+    model: settings.defaultModel,
+    messages: entry.messages,
+    summaries: [],
+    starred: false,
+    starredAt: null,
+  }));
+  // Prepended as a whole batch, in file order, so the file's first topic ends
+  // up at the very top, above every existing topic.
+  topics = [...newTopics, ...topics];
+  const count = newTopics.length;
+  pendingImportData = null;
+  clearImportStatus();
+  saveTopics();
+  renderTopicList();
+  showToast(t("data.import_success", { count }));
+}
+
+async function handleImportFileSelected() {
+  const file = el.importFileInput.files[0];
+  el.importFileInput.value = ""; // allow re-selecting the same file later
+  if (!file) return;
+  clearImportStatus();
+  try {
+    const text = await file.text();
+    const parsed = parseImportedHtml(text);
+    if (parsed.length === 0) {
+      showImportError(t("data.import_none_found"));
+      return;
+    }
+    pendingImportData = parsed;
+    showImportConfirm(parsed.length);
+  } catch (e) {
+    showImportError(e.message);
+  }
+}
+
 // ---------- Password protection ----------
 
 function refreshPasswordUI() {
@@ -1413,6 +1519,10 @@ el.sidebarToggleBtn.addEventListener("click", toggleSidebar);
 el.fontDecreaseBtn.addEventListener("click", () => adjustFontSize(-FONT_SIZE_STEP));
 el.fontIncreaseBtn.addEventListener("click", () => adjustFontSize(FONT_SIZE_STEP));
 el.widthToggleBtn.addEventListener("click", cycleChatWidth);
+el.exportTopicBtn.addEventListener("click", () => void exportCurrentTopic());
+el.exportAllBtn.addEventListener("click", () => void exportAllTopics());
+el.importBtn.addEventListener("click", () => el.importFileInput.click());
+el.importFileInput.addEventListener("change", () => void handleImportFileSelected());
 el.closeSettingsBtn.addEventListener("click", closeSettings);
 el.saveSettingsBtn.addEventListener("click", handleSaveSettings);
 el.modelList.addEventListener("input", () => {

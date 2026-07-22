@@ -38,6 +38,7 @@ const MESSAGES = {
     "font.increase_title": "放大字体",
 
     "width.toggle_title": "切换对话区域宽度（60% / 80% / 100%）",
+    "export.topic_title": "导出当前对话为 HTML",
 
     "settings.title": "设置",
     "settings.api_host": "API Host",
@@ -59,6 +60,20 @@ const MESSAGES = {
     "settings.auto_lock": "无操作自动锁定（分钟）",
     "settings.auto_lock_hint": "点击、输入、鼠标移动和滚动都会重新开始计时；仅在启用密码保护后生效。",
     "settings.save": "保存",
+
+    "data.title": "数据管理",
+    "data.export_all": "导出所有对话",
+    "data.import": "导入对话",
+    "data.unencrypted_hint": "导出的文件不会加密，请妥善保管。",
+    "data.no_topics": "没有可导出的对话",
+    "data.import_found": "解析到 {count} 个对话",
+    "data.import_confirm": "确认导入",
+    "data.import_cancel": "取消",
+    "data.import_success": "已导入 {count} 个对话",
+    "data.import_none_found": "文件中没有找到任何对话",
+    "import.err_not_found": "找不到导出数据（不是本应用导出的文件）",
+    "import.err_parse": "导出数据解析失败：{msg}",
+    "import.err_format": "导出数据格式不正确",
 
     "pwd.status_disabled": "未启用——数据以明文存储在本地",
     "pwd.status_enabled": "已启用——对话记录与设置已加密存储",
@@ -127,6 +142,7 @@ const MESSAGES = {
     "font.increase_title": "Increase font size",
 
     "width.toggle_title": "Change chat area width (60% / 80% / 100%)",
+    "export.topic_title": "Export current chat as HTML",
 
     "settings.title": "Settings",
     "settings.api_host": "API Host",
@@ -148,6 +164,20 @@ const MESSAGES = {
     "settings.auto_lock": "Auto-lock after inactivity (minutes)",
     "settings.auto_lock_hint": "Clicking, typing, moving the pointer, or scrolling restarts the timer. Only applies when password protection is enabled.",
     "settings.save": "Save",
+
+    "data.title": "Data management",
+    "data.export_all": "Export all chats",
+    "data.import": "Import chats",
+    "data.unencrypted_hint": "Exported files are never encrypted — keep them safe.",
+    "data.no_topics": "No chats to export",
+    "data.import_found": "Found {count} chat(s)",
+    "data.import_confirm": "Import",
+    "data.import_cancel": "Cancel",
+    "data.import_success": "Imported {count} chat(s)",
+    "data.import_none_found": "No chats found in this file",
+    "import.err_not_found": "Export data not found (this isn't a file exported by this app)",
+    "import.err_parse": "Failed to parse export data: {msg}",
+    "import.err_format": "Export data has an invalid format",
 
     "pwd.status_disabled": "Disabled — data is stored locally in plain text.",
     "pwd.status_enabled": "Enabled — chats and settings are encrypted with AES-256-GCM.",
