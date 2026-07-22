@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS = {
   extraParams: "",
   chatFontSize: 14.5,
   sidebarCollapsed: false,
+  chatWide: false,
   autoLockMinutes: 2,
 };
 
@@ -53,6 +54,7 @@ const el = {
   sidebarToggleBtn: document.getElementById("sidebarToggleBtn"),
   fontDecreaseBtn: document.getElementById("fontDecreaseBtn"),
   fontIncreaseBtn: document.getElementById("fontIncreaseBtn"),
+  widthToggleBtn: document.getElementById("widthToggleBtn"),
   modelSelect: document.getElementById("modelSelect"),
   messages: document.getElementById("messages"),
   scrollIndicatorBtn: document.getElementById("scrollIndicatorBtn"),
@@ -279,6 +281,19 @@ function adjustFontSize(delta) {
   if (next === settings.chatFontSize) return;
   settings.chatFontSize = next;
   applyFontSize();
+  saveSettings();
+}
+
+// ---------- Chat width ----------
+
+function applyChatWidth() {
+  el.app.classList.toggle("chat-wide", !!settings.chatWide);
+  el.widthToggleBtn.classList.toggle("is-wide", !!settings.chatWide);
+}
+
+function toggleChatWidth() {
+  settings.chatWide = !settings.chatWide;
+  applyChatWidth();
   saveSettings();
 }
 
@@ -1026,6 +1041,7 @@ el.settingsBtn.addEventListener("click", openSettings);
 el.sidebarToggleBtn.addEventListener("click", toggleSidebar);
 el.fontDecreaseBtn.addEventListener("click", () => adjustFontSize(-FONT_SIZE_STEP));
 el.fontIncreaseBtn.addEventListener("click", () => adjustFontSize(FONT_SIZE_STEP));
+el.widthToggleBtn.addEventListener("click", toggleChatWidth);
 el.closeSettingsBtn.addEventListener("click", closeSettings);
 el.saveSettingsBtn.addEventListener("click", handleSaveSettings);
 el.settingsModal.addEventListener("click", (e) => {
@@ -1092,6 +1108,7 @@ el.modelSelect.addEventListener("change", () => {
 function startApp() {
   applySidebarState();
   applyFontSize();
+  applyChatWidth();
   populateModelSelect();
   renderTopicList();
 

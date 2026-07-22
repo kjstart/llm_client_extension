@@ -47,14 +47,15 @@ html, body {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-  --content-max-width: 1080px;
+  /* Percentage of the chat area's width, so it automatically re-centers
+     when the sidebar collapses/expands instead of needing a fixed px cap. */
+  --content-max-width: 80%;
 }
 .app.hidden { display: none; }
 
-/* Collapsing the sidebar frees ~260px; raise the content cap so the
-   conversation actually widens instead of only growing side margins. */
-.app.sidebar-collapsed {
-  --content-max-width: 1360px;
+/* User-triggered "widen" mode: use the full available width. */
+.app.chat-wide {
+  --content-max-width: 100%;
 }
 
 /* Sidebar */
@@ -235,6 +236,11 @@ html, body {
   border-radius: 7px;
   padding: 2px;
 }
+
+/* Chat-width toggle: swaps a "narrow" bracket icon for a "wide" one. */
+.width-toggle-btn .width-icon-wide { display: none; }
+.width-toggle-btn.is-wide .width-icon-narrow { display: none; }
+.width-toggle-btn.is-wide .width-icon-wide { display: block; }
 
 .font-btn {
   width: 26px;

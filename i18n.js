@@ -28,6 +28,8 @@ const MESSAGES = {
     "font.decrease_title": "缩小字体",
     "font.increase_title": "放大字体",
 
+    "width.toggle_title": "切换聊天区域宽度（80% / 100%）",
+
     "settings.title": "设置",
     "settings.api_host": "API Host",
     "settings.api_key": "API Key",
@@ -103,6 +105,8 @@ const MESSAGES = {
 
     "font.decrease_title": "Decrease font size",
     "font.increase_title": "Increase font size",
+
+    "width.toggle_title": "Toggle chat area width (80% / 100%)",
 
     "settings.title": "Settings",
     "settings.api_host": "API Host",
