@@ -18,10 +18,16 @@ const MESSAGES = {
     "topic.delete_title": "删除对话",
     "topic.delete_confirm_title": "确认删除",
     "topic.delete_cancel_title": "取消删除",
+    "topic.star_title": "使用摘要作为系统提示词",
+    "topic.unstar_title": "取消使用摘要作为系统提示词",
 
     "chat.empty": "开始新的对话吧",
     "chat.scroll_title": "滚动到最新消息",
     "queue.delete_title": "删除排队消息",
+
+    "summary.divider_label": "自动摘要",
+    "summary.pending_label": "正在自动摘要…",
+    "star.max_reached": "已达到最多 5 个星标话题，请先取消其他一个",
 
     "composer.placeholder": "输入消息，Enter 发送，Shift+Enter 换行…",
     "composer.send": "发送",
@@ -44,6 +50,8 @@ const MESSAGES = {
     "settings.freq_penalty": "Frequency Penalty",
     "settings.system_prompt": "System Prompt（可选）",
     "settings.system_prompt_placeholder": "你是一个乐于助人的助手。",
+    "settings.auto_compress": "对话自动压缩阈值（字，留空关闭）",
+    "settings.auto_compress_hint": "发送新消息前，若当前话题未压缩的对话内容超过这个字数，会先自动请求当前模型生成摘要，再继续发送。",
     "settings.extra_params": "额外参数（JSON，可选）",
     "settings.extra_params_hint":
       "合并进请求体，支持任意 OpenAI 兼容参数。<code>model</code>/<code>messages</code>/<code>stream</code> 由客户端管理无法覆盖；将某个标准参数设为 <code>null</code>（如 <code>{\"temperature\": null}</code>）可在本次请求中省略它。",
@@ -99,10 +107,16 @@ const MESSAGES = {
     "topic.delete_title": "Delete chat",
     "topic.delete_confirm_title": "Confirm delete",
     "topic.delete_cancel_title": "Cancel delete",
+    "topic.star_title": "Use this chat's summary as a system prompt",
+    "topic.unstar_title": "Stop using this chat's summary as a system prompt",
 
     "chat.empty": "Start a new conversation",
     "chat.scroll_title": "Scroll to latest message",
     "queue.delete_title": "Delete queued message",
+
+    "summary.divider_label": "Auto-summary",
+    "summary.pending_label": "Auto-summarizing…",
+    "star.max_reached": "Maximum of 5 starred chats reached — unstar one first",
 
     "composer.placeholder": "Type a message. Enter to send, Shift+Enter for a new line…",
     "composer.send": "Send",
@@ -125,6 +139,8 @@ const MESSAGES = {
     "settings.freq_penalty": "Frequency Penalty",
     "settings.system_prompt": "System Prompt (optional)",
     "settings.system_prompt_placeholder": "You are a helpful assistant.",
+    "settings.auto_compress": "Auto-compress threshold (characters, blank to disable)",
+    "settings.auto_compress_hint": "Before sending, if the current chat's un-summarized content exceeds this length, its current model first generates a summary, then the message is sent.",
     "settings.extra_params": "Extra Params (JSON, optional)",
     "settings.extra_params_hint":
       "Merged into the request body — any OpenAI-compatible parameter works. <code>model</code>/<code>messages</code>/<code>stream</code> are client-managed and cannot be overridden; set a standard param to <code>null</code> (e.g. <code>{\"temperature\": null}</code>) to omit it for the request.",

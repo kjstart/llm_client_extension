@@ -141,6 +141,12 @@
         </label>
 
         <label class="field">
+          <span data-i18n="settings.auto_compress">对话自动压缩阈值（字，留空关闭）</span>
+          <input id="autoCompressThreshold" type="number" min="1" step="100" placeholder="例如 6000" />
+          <small class="field-hint" data-i18n="settings.auto_compress_hint">发送新消息前，若当前话题未压缩的对话内容超过这个字数，会先自动请求当前模型生成摘要，再继续发送。</small>
+        </label>
+
+        <label class="field">
           <span data-i18n="settings.extra_params">额外参数（JSON，可选）</span>
           <textarea id="extraParams" rows="4" spellcheck="false"
             placeholder='{&#10;  "thinking": { "type": "enabled" },&#10;  "reasoning_effort": "high"&#10;}'></textarea>
@@ -186,6 +192,8 @@
       </div>
     </div>
   </div>
+
+  <div id="toast" class="toast hidden"></div>
 
   <script src="i18n.js"></script>
   <script src="crypto.js"></script>

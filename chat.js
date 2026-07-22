@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS = {
   sidebarCollapsed: false,
   chatWidthLevel: "normal", // "narrow" (60%) | "normal" (80%) | "wide" (100%)
   autoLockMinutes: 2,
+  autoCompressThreshold: "", // raw string; "" = auto-compression disabled
 };
 
 // Request-body keys the client always controls; extra params can never override them.
@@ -27,6 +28,9 @@ const FONT_SIZE_MAX = 22;
 const FONT_SIZE_STEP = 1;
 // Abort if no response starts, or the stream stalls, within this window.
 const REQUEST_TIMEOUT_MS = 60 * 1000;
+const MAX_STARRED_TOPICS = 5;
+const SUMMARY_SYSTEM_INSTRUCTION =
+  "请将以下对话内容压缩为一段简洁的摘要，保留关键信息、结论与上下文，去除寒暄与重复内容。只输出摘要正文，不要添加任何额外说明或标题。";
 
 let settings = { ...DEFAULT_SETTINGS };
 let topics = [];
@@ -35,6 +39,11 @@ let activeTopicId = null;
 // by a "cancel" button (same spot) plus a "confirm" button to its left.
 let confirmingDeleteTopicId = null;
 let topicSearchQuery = "";
+// True while a compressTopic() call (auto-triggered or star-triggered) is in
+// flight; disables all star buttons and blocks new sends until it settles.
+let isSummarizing = false;
+// Topic whose message list should show a "compressing..." placeholder divider.
+let pendingSummaryTopicId = null;
 let isStreaming = false;
 let abortController = null;
 // Why the current request was aborted: "user" (stop button) or "timeout".
@@ -82,6 +91,7 @@ const el = {
   extraParams: document.getElementById("extraParams"),
   extraParamsMsg: document.getElementById("extraParamsMsg"),
   autoLockMinutes: document.getElementById("autoLockMinutes"),
+  autoCompressThreshold: document.getElementById("autoCompressThreshold"),
 
   passwordStatus: document.getElementById("passwordStatus"),
   passwordSetupForm: document.getElementById("passwordSetupForm"),
@@ -100,6 +110,8 @@ const el = {
   unlockPassword: document.getElementById("unlockPassword"),
   unlockError: document.getElementById("unlockError"),
   unlockBtn: document.getElementById("unlockBtn"),
+
+  toast: document.getElementById("toast"),
 };
 
 // ---------- Storage ----------
@@ -129,6 +141,14 @@ function genId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+// Backfills fields introduced after a topic may have already been persisted.
+function normalizeTopic(topic) {
+  if (!Array.isArray(topic.summaries)) topic.summaries = [];
+  if (typeof topic.starred !== "boolean") topic.starred = false;
+  if (typeof topic.starredAt !== "number") topic.starredAt = null;
+  return topic;
+}
+
 function createTopic() {
   const topic = {
     id: genId(),
@@ -136,6 +156,9 @@ function createTopic() {
     createdAt: Date.now(),
     model: settings.defaultModel,
     messages: [],
+    summaries: [],
+    starred: false,
+    starredAt: null,
   };
   topics.unshift(topic);
   activeTopicId = topic.id;
@@ -243,12 +266,20 @@ function renderTopicList() {
       item.appendChild(confirmBtn);
       item.appendChild(cancelBtn);
     } else {
+      const starBtn = document.createElement("button");
+      starBtn.className = "topic-star" + (topic.starred ? " starred" : "");
+      starBtn.textContent = "★";
+      starBtn.title = t(topic.starred ? "topic.unstar_title" : "topic.star_title");
+      starBtn.disabled = isStreaming || isSummarizing;
+      starBtn.addEventListener("click", (e) => toggleStarTopic(topic.id, e));
+
       const del = document.createElement("button");
       del.className = "topic-delete";
       del.textContent = "✕";
       del.title = t("topic.delete_title");
       del.addEventListener("click", (e) => requestDeleteTopic(topic.id, e));
 
+      item.appendChild(starBtn);
       item.appendChild(del);
     }
 
@@ -375,7 +406,11 @@ function renderMessages() {
     ? queuedMessages.filter((message) => message.topicId === topic.id)
     : [];
   const hasActiveRequest = Boolean(topic && isStreaming && activeRequest?.topicId === topic.id);
-  if (!topic || (topic.messages.length === 0 && topicQueue.length === 0 && !hasActiveRequest)) {
+  const hasPendingSummary = Boolean(topic && pendingSummaryTopicId === topic.id);
+  if (
+    !topic ||
+    (topic.messages.length === 0 && topicQueue.length === 0 && !hasActiveRequest && !hasPendingSummary)
+  ) {
     el.messages.classList.add("is-empty");
     const empty = document.createElement("div");
     empty.className = "empty-state";
@@ -384,9 +419,23 @@ function renderMessages() {
     return;
   }
   el.messages.classList.remove("is-empty");
-  for (const msg of topic.messages) {
+
+  let summaryIdx = 0;
+  topic.messages.forEach((msg, index) => {
+    while (summaryIdx < topic.summaries.length && topic.summaries[summaryIdx].afterMessageIndex === index) {
+      appendSummaryDivider(topic.summaries[summaryIdx]);
+      summaryIdx += 1;
+    }
     appendMessageBubble(msg.role, msg.content);
+  });
+  while (summaryIdx < topic.summaries.length) {
+    appendSummaryDivider(topic.summaries[summaryIdx]);
+    summaryIdx += 1;
   }
+  if (hasPendingSummary) {
+    appendPendingSummaryDivider();
+  }
+
   if (hasActiveRequest) {
     activeRequest.bubble = appendMessageBubble("assistant", activeRequest.assistantText);
   } else if (activeRequest) {
@@ -449,6 +498,42 @@ function appendMessageBubble(role, content) {
   return bubble;
 }
 
+// Clickable divider marking a compression checkpoint; expands to show the
+// stored summary text. Expand/collapse state resets on the next re-render,
+// consistent with this app's full-rerender pattern elsewhere.
+function appendSummaryDivider(summary) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "summary-divider";
+
+  const line = document.createElement("button");
+  line.type = "button";
+  line.className = "summary-divider-line";
+  line.textContent = `------ ${t("summary.divider_label")} ------`;
+
+  const content = document.createElement("div");
+  content.className = "summary-divider-content hidden";
+  content.textContent = summary.text;
+
+  line.addEventListener("click", () => content.classList.toggle("hidden"));
+
+  wrapper.append(line, content);
+  el.messages.appendChild(wrapper);
+  return wrapper;
+}
+
+// Shown while a compressTopic() call is in flight, so a slow reply after
+// sending is self-explanatory. Never stored — removed on the next re-render.
+function appendPendingSummaryDivider() {
+  const wrapper = document.createElement("div");
+  wrapper.className = "summary-divider pending";
+  const line = document.createElement("div");
+  line.className = "summary-divider-line";
+  line.textContent = `------ ${t("summary.pending_label")} ------`;
+  wrapper.appendChild(line);
+  el.messages.appendChild(wrapper);
+  return wrapper;
+}
+
 function appendQueuedMessageBubble(message) {
   const row = document.createElement("div");
   row.className = "message-row queued";
@@ -483,6 +568,167 @@ function deleteQueuedMessage(id) {
   if (index === -1) return;
   queuedMessages.splice(index, 1);
   renderMessages();
+}
+
+// ---------- Toast ----------
+
+let toastTimer = null;
+
+function showToast(message) {
+  el.toast.textContent = message;
+  el.toast.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.toast.classList.add("hidden"), 2500);
+}
+
+// ---------- Auto-compression & starred context ----------
+
+function getLatestSummary(topic) {
+  return topic.summaries.length ? topic.summaries[topic.summaries.length - 1] : null;
+}
+
+// The "active tail": messages not yet folded into a summary. This is what
+// actually gets sent (alongside the latest summary, if any) and what the
+// auto-compress length check measures.
+function getTailMessages(topic) {
+  const latest = getLatestSummary(topic);
+  return latest ? topic.messages.slice(latest.afterMessageIndex) : topic.messages;
+}
+
+function tailContentLength(topic) {
+  return getTailMessages(topic).reduce((sum, m) => sum + (m.content ? m.content.length : 0), 0);
+}
+
+function starredTopicsForInjection(currentTopic) {
+  return topics
+    .filter((cand) => cand.starred && cand.id !== currentTopic.id && getLatestSummary(cand))
+    .sort((a, b) => (a.starredAt || 0) - (b.starredAt || 0));
+}
+
+// Assembles the full messages array for a real chat request: user's system
+// prompt, other starred topics' summaries, this topic's own rolling summary
+// (if any), then the raw tail messages (including the just-pushed new one).
+function buildApiMessages(topic) {
+  const apiMessages = [];
+  if (settings.systemPrompt && settings.systemPrompt.trim()) {
+    apiMessages.push({ role: "system", content: settings.systemPrompt.trim() });
+  }
+  for (const starredTopic of starredTopicsForInjection(topic)) {
+    const summary = getLatestSummary(starredTopic);
+    apiMessages.push({
+      role: "system",
+      content: `以下是【${starredTopic.title}】的背景摘要：\n${summary.text}`,
+    });
+  }
+  const ownSummary = getLatestSummary(topic);
+  if (ownSummary) {
+    apiMessages.push({ role: "system", content: `以下是本对话较早内容的摘要：\n${ownSummary.text}` });
+  }
+  for (const m of getTailMessages(topic)) {
+    apiMessages.push({ role: m.role, content: m.content });
+  }
+  return apiMessages;
+}
+
+// Summarizes a topic's un-summarized tail (rolled on top of its previous
+// summary, if any) via one non-streaming request to its own model, then
+// stores the result as a new checkpoint. Used both by the auto-compress
+// threshold check and by star-triggering a topic with no summary yet.
+async function compressTopic(topic) {
+  if (!settings.apiKey) {
+    openSettings();
+    return false;
+  }
+  const tail = getTailMessages(topic);
+  if (tail.length === 0) return false;
+
+  isSummarizing = true;
+  pendingSummaryTopicId = topic.id;
+  renderTopicList();
+  if (topic.id === activeTopicId) renderMessages();
+
+  const cutoff = topic.messages.length;
+  const priorSummary = getLatestSummary(topic);
+  let sourceText = "";
+  if (priorSummary) {
+    sourceText += `【之前的摘要】\n${priorSummary.text}\n\n`;
+  }
+  sourceText +=
+    "【新增对话内容】\n" +
+    tail.map((m) => `${m.role === "user" ? "用户" : "助手"}：${m.content}`).join("\n\n");
+
+  const requestBody = buildRequestBody(
+    {
+      model: topic.model || settings.defaultModel,
+      messages: [
+        { role: "system", content: SUMMARY_SYSTEM_INSTRUCTION },
+        { role: "user", content: sourceText },
+      ],
+      stream: false,
+    },
+    {},
+    parseExtraParams(settings.extraParams).value
+  );
+
+  let success = false;
+  try {
+    const url = joinUrl(settings.apiHost, "/chat/completions");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${settings.apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
+    if (!res.ok) throw new Error("summary request failed");
+    const json = await res.json();
+    const text = json.choices?.[0]?.message?.content?.trim();
+    if (!text) throw new Error("empty summary");
+
+    topic.summaries.push({ afterMessageIndex: cutoff, text, createdAt: Date.now() });
+    await saveTopics();
+    success = true;
+  } catch (e) {
+    success = false;
+  } finally {
+    isSummarizing = false;
+    pendingSummaryTopicId = null;
+    renderTopicList();
+    if (topic.id === activeTopicId) renderMessages();
+  }
+  return success;
+}
+
+async function toggleStarTopic(topicId, evt) {
+  evt.stopPropagation();
+  if (isStreaming || isSummarizing) return;
+  const topic = topics.find((cand) => cand.id === topicId);
+  if (!topic) return;
+
+  if (topic.starred) {
+    topic.starred = false;
+    topic.starredAt = null;
+    saveTopics();
+    renderTopicList();
+    return;
+  }
+
+  const starredCount = topics.filter((cand) => cand.starred).length;
+  if (starredCount >= MAX_STARRED_TOPICS) {
+    showToast(t("star.max_reached"));
+    return;
+  }
+
+  if (!getLatestSummary(topic)) {
+    const ok = await compressTopic(topic);
+    if (!ok) return;
+  }
+
+  topic.starred = true;
+  topic.starredAt = Date.now();
+  saveTopics();
+  renderTopicList();
 }
 
 // ---------- Sending ----------
@@ -524,7 +770,7 @@ function drainMessageQueue() {
 }
 
 async function sendMessage(text, queuedId = null) {
-  if (!text || isStreaming) return;
+  if (!text || isStreaming || isSummarizing) return;
 
   if (!settings.apiKey) {
     openSettings();
@@ -542,6 +788,11 @@ async function sendMessage(text, queuedId = null) {
   if (!topic) {
     createTopic();
     topic = getActiveTopic();
+  }
+
+  const compressThreshold = Number(settings.autoCompressThreshold);
+  if (settings.autoCompressThreshold && compressThreshold > 0 && tailContentLength(topic) > compressThreshold) {
+    await compressTopic(topic);
   }
 
   if (topic.messages.length === 0) {
@@ -582,13 +833,7 @@ async function sendMessage(text, queuedId = null) {
     }, REQUEST_TIMEOUT_MS);
   };
 
-  const apiMessages = [];
-  if (settings.systemPrompt && settings.systemPrompt.trim()) {
-    apiMessages.push({ role: "system", content: settings.systemPrompt.trim() });
-  }
-  for (const m of topic.messages) {
-    apiMessages.push({ role: m.role, content: m.content });
-  }
+  const apiMessages = buildApiMessages(topic);
 
   const requestBody = buildRequestBody(
     { model: topic.model, messages: apiMessages, stream: true },
@@ -703,6 +948,7 @@ async function sendMessage(text, queuedId = null) {
     activeRequest = null;
     setComposerStreaming(false);
     refreshScrollIndicator();
+    renderTopicList();
     drainMessageQueue();
   }
 }
@@ -837,6 +1083,7 @@ function openSettings() {
   el.extraParams.value = settings.extraParams || "";
   el.extraParamsMsg.textContent = "";
   el.autoLockMinutes.value = settings.autoLockMinutes || DEFAULT_SETTINGS.autoLockMinutes;
+  el.autoCompressThreshold.value = settings.autoCompressThreshold || "";
   populateDefaultModelSelect(settings.models, settings.defaultModel);
   refreshPasswordUI();
   el.settingsModal.classList.remove("hidden");
@@ -880,6 +1127,10 @@ async function handleSaveSettings() {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  const rawThreshold = el.autoCompressThreshold.value.trim();
+  const thresholdNum = Number(rawThreshold);
+  const autoCompressThreshold = rawThreshold && thresholdNum > 0 ? String(Math.floor(thresholdNum)) : "";
+
   settings = {
     ...settings,
     apiHost: el.apiHost.value.trim() || DEFAULT_SETTINGS.apiHost,
@@ -896,6 +1147,7 @@ async function handleSaveSettings() {
       1440,
       Math.max(1, Number(el.autoLockMinutes.value) || DEFAULT_SETTINGS.autoLockMinutes)
     ),
+    autoCompressThreshold,
   };
 
   await saveSettings();
@@ -1061,7 +1313,7 @@ async function handleUnlock() {
     const key = await deriveKeyFromPassword(password, salt);
     const payload = await decryptWithKey(key, data.vault.iv, data.vault.ciphertext);
     settings = { ...DEFAULT_SETTINGS, ...(payload.settings || {}) };
-    topics = payload.topics || [];
+    topics = (payload.topics || []).map(normalizeTopic);
     cryptoState = { key, salt };
     hideLockScreen();
     startApp();
@@ -1193,7 +1445,7 @@ function startApp() {
     return;
   }
   settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
-  topics = data.topics || [];
+  topics = (data.topics || []).map(normalizeTopic);
   hideLockScreen();
   startApp();
 })();
