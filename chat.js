@@ -30,7 +30,13 @@ const FONT_SIZE_STEP = 1;
 const REQUEST_TIMEOUT_MS = 60 * 1000;
 const MAX_STARRED_TOPICS = 5;
 const SUMMARY_SYSTEM_INSTRUCTION =
-  "请将以下对话内容压缩为一段简洁的摘要，保留关键信息、结论与上下文，去除寒暄与重复内容。只输出摘要正文，不要添加任何额外说明或标题。";
+  "请将以下对话内容压缩为一段结构化摘要，用于替代原始对话历史。请按以下几点整理（没有对应内容可省略该点）：\n" +
+  "1. 这段对话在讨论什么，用户的目的/需求是什么\n" +
+  "2. 已经得出的结论、决定，以及做出这些决定的原因\n" +
+  "3. 被提出但最终被否决的方案，以及原因\n" +
+  "4. 用户明确表达过的偏好、约束或背景信息\n" +
+  "5. 还没有解决的问题，或者后续可能要接着聊的方向\n" +
+  "删除寒暄、重复内容和无关的过渡语。请使用当前对话所使用的语言生成摘要。只输出摘要正文，不要加标题或额外说明。";
 
 let settings = { ...DEFAULT_SETTINGS };
 let topics = [];
@@ -342,6 +348,9 @@ function updateHeader() {
   if (topic) {
     el.modelSelect.value = topic.model || settings.defaultModel;
   }
+  // The active topic just (potentially) changed — the send button must reflect
+  // whether *this* topic is generating, not whatever topic is streaming globally.
+  refreshComposerStreamingUI();
 }
 
 // ---------- Sidebar collapse ----------
@@ -468,9 +477,13 @@ function refreshScrollIndicator() {
     el.scrollIndicatorBtn.classList.add("hidden");
     return;
   }
+  // isStreaming is global (only one request runs at a time, see sendMessage),
+  // but the in-flight request may belong to a topic other than the one
+  // currently being viewed — only show "generating" for its own topic.
+  const isGeneratingHere = isStreaming && activeRequest?.topicId === activeTopicId;
   el.scrollIndicatorBtn.classList.remove("hidden");
-  el.scrollIndicatorBtn.classList.toggle("generating", isStreaming);
-  el.scrollIndicatorBtn.classList.toggle("done", !isStreaming);
+  el.scrollIndicatorBtn.classList.toggle("generating", isGeneratingHere);
+  el.scrollIndicatorBtn.classList.toggle("done", !isGeneratingHere);
 }
 
 function renderBubbleContent(bubble, role, content) {
@@ -819,7 +832,7 @@ async function sendMessage(text, queuedId = null) {
   abortReason = null;
   abortController = new AbortController();
   activeRequest = { topicId: topic.id, assistantText: "", bubble: null };
-  setComposerStreaming(true);
+  refreshComposerStreamingUI();
 
   renderMessages();
   renderTopicList();
@@ -951,7 +964,7 @@ async function sendMessage(text, queuedId = null) {
     abortReason = null;
     abortController = null;
     activeRequest = null;
-    setComposerStreaming(false);
+    refreshComposerStreamingUI();
     refreshScrollIndicator();
     renderTopicList();
     drainMessageQueue();
@@ -1072,6 +1085,18 @@ function setComposerStreaming(streaming) {
   } else {
     el.sendBtn.textContent = t("composer.send");
   }
+}
+
+// isStreaming/activeRequest are global (only one request runs at a time — see
+// sendMessage's mutex), but the in-flight request may belong to a topic other
+// than the one currently being viewed. This is what the send button and the
+// send-vs-stop click behavior must key off, not the raw isStreaming flag.
+function isGeneratingActiveTopic() {
+  return isStreaming && activeRequest?.topicId === activeTopicId;
+}
+
+function refreshComposerStreamingUI() {
+  setComposerStreaming(isGeneratingActiveTopic());
 }
 
 // ---------- Settings modal ----------
@@ -1382,7 +1407,11 @@ el.unlockPassword.addEventListener("keydown", (e) => {
 });
 
 el.sendBtn.addEventListener("click", () => {
-  if (isStreaming) {
+  // isStreaming alone isn't enough here: it's global, but a background topic
+  // may be the one generating while this button is drawn for a different,
+  // idle topic — in that case a click should queue a message, not abort
+  // whatever the other topic is doing.
+  if (isGeneratingActiveTopic()) {
     stopGeneration();
   } else {
     submitComposerMessage();
