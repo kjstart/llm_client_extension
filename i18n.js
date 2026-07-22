@@ -10,11 +10,14 @@ const MESSAGES = {
     "lock.unlock": "解锁",
 
     "sidebar.new_chat": "新对话",
+    "sidebar.search_placeholder": "搜索对话…",
     "sidebar.settings": "设置",
     "sidebar.toggle_title": "收起/展开侧边栏",
 
     "topic.default_title": "新对话",
     "topic.delete_title": "删除对话",
+    "topic.delete_confirm_title": "确认删除",
+    "topic.delete_cancel_title": "取消删除",
 
     "chat.empty": "开始新的对话吧",
     "chat.scroll_title": "滚动到最新消息",
@@ -88,11 +91,14 @@ const MESSAGES = {
     "lock.unlock": "Unlock",
 
     "sidebar.new_chat": "New chat",
+    "sidebar.search_placeholder": "Search chats…",
     "sidebar.settings": "Settings",
     "sidebar.toggle_title": "Collapse / expand sidebar",
 
     "topic.default_title": "New chat",
     "topic.delete_title": "Delete chat",
+    "topic.delete_confirm_title": "Confirm delete",
+    "topic.delete_cancel_title": "Cancel delete",
 
     "chat.empty": "Start a new conversation",
     "chat.scroll_title": "Scroll to latest message",

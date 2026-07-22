@@ -31,6 +31,10 @@ const REQUEST_TIMEOUT_MS = 60 * 1000;
 let settings = { ...DEFAULT_SETTINGS };
 let topics = [];
 let activeTopicId = null;
+// Topic mid-delete-confirmation, if any: its delete button has been replaced
+// by a "cancel" button (same spot) plus a "confirm" button to its left.
+let confirmingDeleteTopicId = null;
+let topicSearchQuery = "";
 let isStreaming = false;
 let abortController = null;
 // Why the current request was aborted: "user" (stop button) or "timeout".
@@ -49,6 +53,7 @@ const compositionJustEndedInputs = new WeakSet();
 const el = {
   app: document.querySelector(".app"),
   topicList: document.getElementById("topicList"),
+  topicSearchInput: document.getElementById("topicSearchInput"),
   newTopicBtn: document.getElementById("newTopicBtn"),
   settingsBtn: document.getElementById("settingsBtn"),
   chatTitle: document.getElementById("chatTitle"),
@@ -160,15 +165,32 @@ function deleteTopic(id, evt) {
   if (activeTopicId === id) {
     activeTopicId = topics.length ? topics[0].id : null;
   }
+  if (confirmingDeleteTopicId === id) confirmingDeleteTopicId = null;
   saveTopics();
   renderTopicList();
   renderMessages();
   updateHeader();
 }
 
+function requestDeleteTopic(id, evt) {
+  evt.stopPropagation();
+  confirmingDeleteTopicId = id;
+  renderTopicList();
+}
+
+function cancelDeleteTopic(evt) {
+  evt.stopPropagation();
+  confirmingDeleteTopicId = null;
+  renderTopicList();
+}
+
 function renderTopicList() {
   el.topicList.innerHTML = "";
-  for (const topic of topics) {
+  const query = topicSearchQuery.trim().toLowerCase();
+  const visibleTopics = query
+    ? topics.filter((topic) => topic.title.toLowerCase().includes(query))
+    : topics;
+  for (const topic of visibleTopics) {
     const item = document.createElement("div");
     item.className = "topic-item" + (topic.id === activeTopicId ? " active" : "");
 
@@ -183,6 +205,10 @@ function renderTopicList() {
       }, 220);
     });
 
+    item.addEventListener("mouseleave", (e) => {
+      if (confirmingDeleteTopicId === topic.id) cancelDeleteTopic(e);
+    });
+
     const title = document.createElement("span");
     title.className = "topic-title";
     title.textContent = topic.title;
@@ -195,14 +221,37 @@ function renderTopicList() {
       startRenameTopic(topic, title);
     });
 
-    const del = document.createElement("button");
-    del.className = "topic-delete";
-    del.textContent = "✕";
-    del.title = t("topic.delete_title");
-    del.addEventListener("click", (e) => deleteTopic(topic.id, e));
-
     item.appendChild(title);
-    item.appendChild(del);
+
+    if (confirmingDeleteTopicId === topic.id) {
+      item.classList.add("confirming-delete");
+
+      const confirmBtn = document.createElement("button");
+      confirmBtn.className = "topic-delete-confirm";
+      confirmBtn.textContent = "✓";
+      confirmBtn.title = t("topic.delete_confirm_title");
+      confirmBtn.addEventListener("click", (e) => deleteTopic(topic.id, e));
+
+      // Same position the original delete button occupied, so a second rapid
+      // click (double-click) lands here and cancels instead of confirming.
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "topic-delete";
+      cancelBtn.textContent = "↩";
+      cancelBtn.title = t("topic.delete_cancel_title");
+      cancelBtn.addEventListener("click", (e) => cancelDeleteTopic(e));
+
+      item.appendChild(confirmBtn);
+      item.appendChild(cancelBtn);
+    } else {
+      const del = document.createElement("button");
+      del.className = "topic-delete";
+      del.textContent = "✕";
+      del.title = t("topic.delete_title");
+      del.addEventListener("click", (e) => requestDeleteTopic(topic.id, e));
+
+      item.appendChild(del);
+    }
+
     el.topicList.appendChild(item);
   }
 }
@@ -1042,6 +1091,10 @@ document.addEventListener("scroll", resetIdleTimer, { passive: true, capture: tr
 // ---------- Events ----------
 
 el.newTopicBtn.addEventListener("click", createTopic);
+el.topicSearchInput.addEventListener("input", () => {
+  topicSearchQuery = el.topicSearchInput.value;
+  renderTopicList();
+});
 el.settingsBtn.addEventListener("click", openSettings);
 el.sidebarToggleBtn.addEventListener("click", toggleSidebar);
 el.fontDecreaseBtn.addEventListener("click", () => adjustFontSize(-FONT_SIZE_STEP));

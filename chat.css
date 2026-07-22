@@ -77,6 +77,21 @@ html, body {
   border-right-color: transparent;
 }
 
+.topic-search-input {
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13.5px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.topic-search-input:focus { outline: none; border-color: var(--accent); }
+.topic-search-input::-webkit-search-cancel-button { cursor: pointer; }
+
 .new-topic-btn {
   display: flex;
   align-items: center;
@@ -149,6 +164,28 @@ html, body {
 }
 .topic-item:hover .topic-delete { opacity: 0.7; }
 .topic-delete:hover { opacity: 1 !important; background: rgba(0,0,0,0.15); }
+
+/* Delete confirmation: the original "✕" spot becomes a "cancel" button (still
+   .topic-delete, always visible while confirming) with a red "confirm" button
+   added to its left, so a rushed second click lands on cancel, not confirm. */
+.topic-item.confirming-delete .topic-delete { opacity: 0.7; }
+
+.topic-delete-confirm {
+  opacity: 0.85;
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.topic-delete-confirm:hover { opacity: 1; background: rgba(224, 49, 49, 0.15); }
+
+/* On the active (blue) topic, match the confirm button's text color to the
+   cancel button's (both white) instead of the red danger color. */
+.topic-item.active .topic-delete-confirm { color: inherit; }
+.topic-item.active .topic-delete-confirm:hover { background: rgba(0, 0, 0, 0.15); }
 
 .sidebar-footer {
   border-top: 1px solid var(--border);
