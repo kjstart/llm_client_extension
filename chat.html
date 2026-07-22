@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>LLM Chat</title>
+<link rel="stylesheet" href="chat.css" />
+</head>
+<body>
+  <div id="lockScreen" class="lock-screen hidden">
+    <div class="lock-box">
+      <img class="lock-icon" src="icons/icon128.png" alt="LLM Chat" />
+      <h1 class="lock-product-name">LLM Chat</h1>
+      <p class="lock-hint" data-i18n="lock.hint">数据已加密，请输入密码解锁</p>
+      <input id="unlockPassword" type="password" data-i18n-placeholder="lock.password_placeholder" placeholder="密码" autocomplete="current-password" />
+      <div id="unlockError" class="lock-error"></div>
+      <button id="unlockBtn" class="primary-btn" data-i18n="lock.unlock">解锁</button>
+    </div>
+  </div>
+
+  <div class="app hidden">
+    <aside class="sidebar">
+      <button id="newTopicBtn" class="new-topic-btn">
+        <span class="icon">+</span> <span data-i18n="sidebar.new_chat">新对话</span>
+      </button>
+      <div id="topicList" class="topic-list"></div>
+      <div class="sidebar-footer">
+        <button id="settingsBtn" class="settings-btn">
+          <span class="icon">⚙</span> <span data-i18n="sidebar.settings">设置</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="chat-area">
+      <header class="chat-header">
+        <div class="header-left">
+          <button id="sidebarToggleBtn" class="icon-btn-plain" data-i18n-title="sidebar.toggle_title" title="收起/展开侧边栏">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+              <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" stroke="currentColor" stroke-width="1.6"/>
+              <line x1="9.5" y1="4.5" x2="9.5" y2="19.5" stroke="currentColor" stroke-width="1.6"/>
+            </svg>
+          </button>
+          <span id="chatTitle">新对话</span>
+        </div>
+        <div class="header-right">
+          <div class="font-size-control">
+            <button id="fontDecreaseBtn" class="font-btn" data-i18n-title="font.decrease_title" title="缩小字体">A-</button>
+            <button id="fontIncreaseBtn" class="font-btn" data-i18n-title="font.increase_title" title="放大字体">A+</button>
+          </div>
+          <select id="modelSelect" class="model-select"></select>
+        </div>
+      </header>
+
+      <div class="messages-wrapper">
+        <div id="messages" class="messages"></div>
+
+        <button id="scrollIndicatorBtn" class="floating-indicator scroll-indicator-btn hidden" data-i18n-title="chat.scroll_title" title="滚动到最新消息">
+          <span class="btn-dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+          <svg class="btn-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none">
+            <path d="M6 10l6 6 6-6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="composer">
+        <textarea id="input" data-i18n-placeholder="composer.placeholder" placeholder="输入消息，Enter 发送，Shift+Enter 换行…" rows="1"></textarea>
+        <button id="sendBtn" class="send-btn" data-i18n="composer.send" data-i18n-title="composer.send_title">发送</button>
+      </div>
+    </main>
+  </div>
+
+  <div id="settingsModal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 data-i18n="settings.title">设置</h2>
+        <button id="closeSettingsBtn" class="icon-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span data-i18n="settings.api_host">API Host</span>
+          <input id="apiHost" type="text" placeholder="https://api.deepseek.com" />
+        </label>
+
+        <label class="field">
+          <span data-i18n="settings.api_key">API Key</span>
+          <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+        </label>
+
+        <label class="field">
+          <span data-i18n="settings.model_list">模型列表（逗号分隔）</span>
+          <input id="modelList" type="text" placeholder="deepseek-chat, deepseek-reasoner" />
+        </label>
+
+        <label class="field">
+          <span data-i18n="settings.default_model">默认模型</span>
+          <select id="defaultModel"></select>
+        </label>
+
+        <div class="field-row">
+          <label class="field">
+            <span data-i18n="settings.temperature">Temperature</span>
+            <input id="temperature" type="number" min="0" max="2" step="0.1" value="1.0" />
+          </label>
+          <label class="field">
+            <span data-i18n="settings.top_p">Top P</span>
+            <input id="topP" type="number" min="0" max="1" step="0.05" value="1.0" />
+          </label>
+        </div>
+
+        <div class="field-row">
+          <label class="field">
+            <span data-i18n="settings.max_tokens">Max Tokens</span>
+            <input id="maxTokens" type="number" min="1" step="1" value="2048" />
+          </label>
+          <label class="field">
+            <span data-i18n="settings.freq_penalty">Frequency Penalty</span>
+            <input id="freqPenalty" type="number" min="-2" max="2" step="0.1" value="0" />
+          </label>
+        </div>
+
+        <label class="field">
+          <span data-i18n="settings.system_prompt">System Prompt（可选）</span>
+          <textarea id="systemPrompt" rows="3" data-i18n-placeholder="settings.system_prompt_placeholder" placeholder="你是一个乐于助人的助手。"></textarea>
+        </label>
+
+        <label class="field">
+          <span data-i18n="settings.extra_params">额外参数 / Extra Params（JSON，可选）</span>
+          <textarea id="extraParams" rows="4" spellcheck="false"
+            placeholder='{&#10;  "thinking": { "type": "enabled" },&#10;  "reasoning_effort": "high"&#10;}'></textarea>
+          <small class="field-hint" data-i18n-html="settings.extra_params_hint">合并进请求体，支持任意 OpenAI 兼容参数。<code>model</code>/<code>messages</code>/<code>stream</code> 由客户端管理无法覆盖；将某个标准参数设为 <code>null</code>（如 <code>{"temperature": null}</code>）可在本次请求中省略它。</small>
+          <div id="extraParamsMsg" class="password-msg"></div>
+        </label>
+
+        <div class="field">
+          <span data-i18n="settings.password">密码保护</span>
+          <div id="passwordStatus" class="password-status">未启用——数据以明文存储在本地</div>
+
+          <div id="passwordSetupForm" class="password-form hidden">
+            <input id="newPassword1" type="password" data-i18n-placeholder="pwd.new_placeholder1" placeholder="设置密码（至少 4 位）" autocomplete="new-password" />
+            <input id="newPassword2" type="password" data-i18n-placeholder="pwd.new_placeholder2" placeholder="确认密码" autocomplete="new-password" />
+            <button id="enablePasswordBtn" class="primary-btn small-btn" data-i18n="pwd.enable">启用密码保护</button>
+          </div>
+
+          <div id="passwordManageForm" class="password-form hidden">
+            <input id="currentPasswordForChange" type="password" data-i18n-placeholder="pwd.current_placeholder" placeholder="当前密码" autocomplete="current-password" />
+            <input id="changePassword1" type="password" data-i18n-placeholder="pwd.change_placeholder1" placeholder="新密码（留空则不修改密码）" autocomplete="new-password" />
+            <input id="changePassword2" type="password" data-i18n-placeholder="pwd.change_placeholder2" placeholder="确认新密码" autocomplete="new-password" />
+            <div class="field-row">
+              <button id="changePasswordBtn" class="primary-btn small-btn" data-i18n="pwd.change_btn">修改密码</button>
+              <button id="disablePasswordBtn" class="danger-btn small-btn" data-i18n="pwd.disable_btn">关闭密码保护</button>
+            </div>
+          </div>
+
+          <div id="passwordMsg" class="password-msg"></div>
+        </div>
+
+        <div class="settings-credit">
+          <a href="https://www.alvinliu.com" target="_blank" rel="noopener noreferrer">www.alvinliu.com</a>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="saveSettingsBtn" class="primary-btn" data-i18n="settings.save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="i18n.js"></script>
+  <script src="crypto.js"></script>
+  <script src="markdown.js"></script>
+  <script src="chat.js"></script>
+</body>
+</html>
