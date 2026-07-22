@@ -289,8 +289,14 @@ html, body {
 .header-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
   flex-shrink: 0;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .icon-btn-plain {
@@ -312,9 +318,6 @@ html, body {
   display: flex;
   align-items: center;
   gap: 2px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 2px;
 }
 
 /* Chat-width toggle: shows the bracket icon matching the current width level. */
@@ -330,17 +333,21 @@ html, body {
 }
 
 .font-btn {
-  width: 26px;
-  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
   border: none;
-  border-radius: 5px;
+  border-radius: 7px;
   background: transparent;
-  color: var(--text);
+  color: var(--text-muted);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  flex-shrink: 0;
 }
-.font-btn:hover { background: var(--border); }
+.font-btn:hover { background: var(--border); color: var(--text); }
 
 .model-select {
   font-size: 13px;

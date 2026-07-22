@@ -126,7 +126,7 @@ const MESSAGES = {
     "font.decrease_title": "Decrease font size",
     "font.increase_title": "Increase font size",
 
-    "width.toggle_title": "Cycle chat area width (60% / 80% / 100%)",
+    "width.toggle_title": "Change chat area width (60% / 80% / 100%)",
 
     "settings.title": "Settings",
     "settings.api_host": "API Host",
