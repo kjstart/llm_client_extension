@@ -1043,9 +1043,16 @@ function buildRequestBody(coreProtected, standardParams, extraParams) {
   return body;
 }
 
+const INPUT_MAX_HEIGHT = 200;
+
 function autoResizeInput() {
   el.input.style.height = "auto";
-  el.input.style.height = Math.min(el.input.scrollHeight, 200) + "px";
+  const contentHeight = el.input.scrollHeight;
+  el.input.style.height = Math.min(contentHeight, INPUT_MAX_HEIGHT) + "px";
+  // Only scroll once content genuinely exceeds the cap — otherwise a fresh
+  // single-line textarea can show a spurious scrollbar from sub-pixel
+  // scrollHeight/clientHeight rounding differences.
+  el.input.style.overflowY = contentHeight > INPUT_MAX_HEIGHT ? "auto" : "hidden";
 }
 
 // Tracks text composition per input so Enter used to accept an IME candidate
@@ -1455,6 +1462,7 @@ function startApp() {
   applyFontSize();
   applyChatWidth();
   populateModelSelect();
+  autoResizeInput();
 
   if (topics.length === 0) {
     createTopic(); // sets activeTopicId and renders the topic list itself
