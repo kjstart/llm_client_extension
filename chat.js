@@ -742,9 +742,16 @@ async function toggleStarTopic(topicId, evt) {
     return;
   }
 
-  if (!getLatestSummary(topic)) {
+  // Always (re)generate before starring if there's un-summarized tail content,
+  // rather than only when no summary exists yet — in a long conversation the
+  // user may star it well after the last checkpoint, and a stale summary would
+  // silently miss everything said since. If the refresh attempt fails, fall
+  // back to an existing summary (if any) rather than blocking the star.
+  if (getTailMessages(topic).length > 0) {
     const ok = await compressTopic(topic);
-    if (!ok) return;
+    if (!ok && !getLatestSummary(topic)) return;
+  } else if (!getLatestSummary(topic)) {
+    return;
   }
 
   topic.starred = true;
@@ -786,7 +793,7 @@ function submitComposerMessage() {
 }
 
 function drainMessageQueue() {
-  if (isAppLocked || isStreaming || queuedMessages.length === 0) return;
+  if (isAppLocked || isStreaming || isSummarizing || queuedMessages.length === 0) return;
   const next = queuedMessages[0];
   void sendMessage(next.content, next.id);
 }
@@ -813,8 +820,21 @@ async function sendMessage(text, queuedId = null) {
   }
 
   const compressThreshold = Number(settings.autoCompressThreshold);
-  if (settings.autoCompressThreshold && compressThreshold > 0 && tailContentLength(topic) > compressThreshold) {
-    await compressTopic(topic);
+  const needsAutoCompress =
+    settings.autoCompressThreshold && compressThreshold > 0 && tailContentLength(topic) > compressThreshold;
+
+  // Fresh send (not a queue replay) that needs compressing first: park the
+  // message in the per-topic send queue right away — same queued-bubble UI
+  // used elsewhere — instead of blocking here, so the user doesn't have to
+  // re-click send once the summary finishes. Compress in the background and
+  // drain the queue when it settles. A replay never re-enters this branch
+  // (even if compression failed and the tail is still over threshold), so a
+  // failed attempt falls back to sending with the existing context once,
+  // rather than retrying forever.
+  if (!queuedMessage && needsAutoCompress) {
+    enqueueMessage(text);
+    void compressTopic(topic).then(() => drainMessageQueue());
+    return;
   }
 
   if (topic.messages.length === 0) {
