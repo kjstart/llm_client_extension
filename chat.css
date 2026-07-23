@@ -138,10 +138,6 @@ html, body {
   white-space: nowrap;
   flex: 1;
 }
-.topic-title.hidden-flag {
-  font-style: italic;
-}
-
 .topic-rename-input {
   flex: 1;
   min-width: 0;
@@ -159,8 +155,7 @@ html, body {
    are vertically centered regardless of glyph (text star vs. SVG trash). */
 .topic-delete,
 .topic-star,
-.topic-delete-confirm,
-.topic-hidden-toggle {
+.topic-delete-confirm {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -240,24 +235,6 @@ html, body {
 .topic-item:hover .topic-star:disabled {
   opacity: 0.25 !important;
 }
-
-/* Hidden-messages eye toggle. Deliberately stealthy: unlike the star button,
-   it never shows at full opacity just because it's active, and never
-   recolors (a colored icon would be invisible against the active/blue row
-   background anyway) — the "hidden" state is conveyed only by swapping to
-   a slashed-eye icon, same inherited color as every other button here. */
-.topic-hidden-toggle {
-  opacity: 0;
-  background: none;
-  border: none;
-  color: inherit;
-  cursor: pointer;
-  font-size: 13px;
-  padding: 0;
-  border-radius: 4px;
-}
-.topic-item:hover .topic-hidden-toggle { opacity: 0.7; }
-.topic-hidden-toggle:hover { opacity: 1 !important; background: rgba(0, 0, 0, 0.15); }
 
 .topic-actions {
   position: relative;
@@ -367,6 +344,16 @@ html, body {
   font-size: 14px;
   font-weight: 600;
   gap: 12px;
+  transition: background-color 0.15s ease;
+}
+
+/* Private mode: a subtle (not black) dimming of the sidebar and header,
+   the only visual distinction from the standard list — no more italics.
+   filter/brightness (rather than an overlay background) keeps this working
+   uniformly regardless of the underlying light/dark theme color. */
+.app.private-mode-active .sidebar,
+.app.private-mode-active .chat-header {
+  filter: brightness(0.94);
 }
 
 .header-left {
@@ -408,6 +395,9 @@ html, body {
   flex-shrink: 0;
 }
 .icon-btn-plain:hover { background: var(--border); color: var(--text); }
+.icon-btn-plain.hidden { display: none; }
+.icon-btn-plain.active { background: var(--accent); color: #fff; }
+.icon-btn-plain.active:hover { background: var(--accent-hover); color: #fff; }
 
 .font-size-control {
   display: flex;
@@ -988,6 +978,7 @@ button.summary-divider-line:hover { color: var(--text); }
   color: var(--text-muted);
   flex: 1;
 }
+.field.hidden { display: none; }
 
 .field input, .field select, .field textarea {
   font-size: 14px;
@@ -1149,6 +1140,26 @@ button.summary-divider-line:hover { color: var(--text); }
 .toggle-switch-input:disabled + .toggle-switch {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.password-layer-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  margin-bottom: 8px;
+}
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+.radio-row input[type="radio"] {
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 .password-form {

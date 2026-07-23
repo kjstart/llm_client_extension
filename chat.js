@@ -16,10 +16,13 @@ const DEFAULT_SETTINGS = {
   chatWidthLevel: "normal", // "narrow" (60%) | "normal" (80%) | "wide" (100%)
   autoLockMinutes: 2,
   autoCompressThreshold: "96000", // raw string; "" = auto-compression disabled
-  // Replaces the classic full-app lock screen with per-topic hiding: the app
-  // never shows a lock screen, but topics flagged `hidden` disappear (and are
-  // encrypted separately) whenever the idle-lock timer fires or on launch.
-  hiddenMessagesEnabled: false,
+  // Independent of encryption — just removes the private-mode button from the
+  // header, wiring the triple-click search-box gesture as the only entry point.
+  hidePrivateModeButton: false,
+  // What the single password (if any) protects: "classic" (everything) or
+  // "private" (only the private topic list). Meaningless while passwordIsSet
+  // is false, beyond being the pending radio choice for the next setup.
+  passwordScope: "classic",
 };
 
 // Request-body keys the client always controls; extra params can never override them.
@@ -57,8 +60,24 @@ function buildSummarySystemInstruction() {
 }
 
 let settings = { ...DEFAULT_SETTINGS };
+
+// `topics`/`activeTopicId` always represent whichever list is CURRENTLY being
+// displayed — standard or private. Entering/exiting private mode swaps their
+// contents with the "parked" holders below, so every other function in this
+// file (sendMessage, renderMessages, star/compress logic, delete, export...)
+// keeps working completely unchanged against `topics`, with no idea which
+// logical list it's actually looking at.
 let topics = [];
 let activeTopicId = null;
+let isPrivateModeActive = false;
+// Holds the STANDARD list's data while private mode is active (null otherwise).
+let parkedStandardTopics = null;
+let parkedStandardActiveTopicId = null;
+// Holds the PRIVATE list's data while NOT active. Starts as an empty ephemeral
+// list — private topics only ever come from here or from decrypting privateVault.
+let parkedPrivateTopics = [];
+let parkedPrivateActiveTopicId = null;
+
 // Topic mid-delete-confirmation, if any: its delete button has been replaced
 // by a "cancel" button (same spot) plus a "confirm" button to its left.
 let confirmingDeleteTopicId = null;
@@ -79,12 +98,19 @@ let abortReason = null;
 let queuedMessages = []; // { id: string, topicId: string, content: string }
 let activeRequest = null; // { topicId: string, assistantText: string, bubble: HTMLElement|null }
 
-// cryptoState is non-null only while a password-protected session is unlocked.
+// There is exactly ONE password at a time — never two coexisting layers.
+// `settings.passwordScope` ("classic" | "private") picks what it protects:
+// "classic" is the original whole-app password protection (encrypts
+// settings + BOTH topic lists together, full lock screen on idle timeout,
+// entering private mode needs no extra prompt since the whole session is
+// already authenticated); "private" protects ONLY the private topic list
+// (settings + standard topics always stay plain, no lock screen ever;
+// entering private mode always re-prompts for the password). Which scope
+// is active can only change by disabling protection first — the radio is
+// locked (disabled) whenever passwordIsSet is true.
 let cryptoState = null; // { key: CryptoKey, salt: Uint8Array }
-// Whether a password is currently configured at all — distinct from
-// cryptoState, which in hidden-messages mode may be null (no key cached yet
-// this session) even though a password has genuinely been set up.
 let passwordIsSet = false;
+
 let idleTimer = null;
 let isAppLocked = false;
 const composingInputs = new WeakSet();
@@ -101,6 +127,7 @@ const el = {
   fontDecreaseBtn: document.getElementById("fontDecreaseBtn"),
   fontIncreaseBtn: document.getElementById("fontIncreaseBtn"),
   widthToggleBtn: document.getElementById("widthToggleBtn"),
+  privateModeBtn: document.getElementById("privateModeBtn"),
   exportTopicBtn: document.getElementById("exportTopicBtn"),
   modelSelect: document.getElementById("modelSelect"),
   messages: document.getElementById("messages"),
@@ -137,7 +164,11 @@ const el = {
   changePasswordBtn: document.getElementById("changePasswordBtn"),
   disablePasswordBtn: document.getElementById("disablePasswordBtn"),
   passwordMsg: document.getElementById("passwordMsg"),
-  hiddenMessagesToggle: document.getElementById("hiddenMessagesToggle"),
+  passwordField: document.getElementById("passwordField"),
+  passwordLayerClassic: document.getElementById("passwordLayerClassic"),
+  passwordLayerPrivate: document.getElementById("passwordLayerPrivate"),
+  privateModeSettingsField: document.getElementById("privateModeSettingsField"),
+  hidePrivateModeButtonToggle: document.getElementById("hidePrivateModeButtonToggle"),
 
   exportAllBtn: document.getElementById("exportAllBtn"),
   importBtn: document.getElementById("importBtn"),
@@ -151,66 +182,56 @@ const el = {
 
   toast: document.getElementById("toast"),
 
-  hiddenUnlockModal: document.getElementById("hiddenUnlockModal"),
-  closeHiddenUnlockBtn: document.getElementById("closeHiddenUnlockBtn"),
-  hiddenUnlockPassword: document.getElementById("hiddenUnlockPassword"),
-  hiddenUnlockError: document.getElementById("hiddenUnlockError"),
-  hiddenUnlockConfirmBtn: document.getElementById("hiddenUnlockConfirmBtn"),
+  privateUnlockModal: document.getElementById("privateUnlockModal"),
+  closePrivateUnlockBtn: document.getElementById("closePrivateUnlockBtn"),
+  privateUnlockPassword: document.getElementById("privateUnlockPassword"),
+  privateUnlockError: document.getElementById("privateUnlockError"),
+  privateUnlockConfirmBtn: document.getElementById("privateUnlockConfirmBtn"),
 };
 
 // ---------- Storage ----------
 
+// `topics` always holds whichever list (standard or private) is currently
+// active — see the swap-based mode state declared above.
+//
+// Classic scope: the ONE password protects everything — settings, the
+// standard list, AND the private list all round-trip through a single
+// `vault` blob. There's no separate private persistence step; whichever
+// list is live vs. parked, both get folded into the same payload.
+//
+// Private scope (or no password at all): settings + the standard list are
+// ALWAYS stored plain — this scope never shows a full-app lock screen.
+// Only the private list gets a separate encrypted `privateVault`, and only
+// while it's actually live (private mode active) and the password has been
+// entered this session — otherwise it's a deliberate no-op, and a
+// never-configured private list stays purely in-memory.
 async function persistState() {
-  if (settings.hiddenMessagesEnabled) {
-    await persistHiddenMode();
+  const standardTopics = isPrivateModeActive ? parkedStandardTopics : topics;
+  const privateTopics = isPrivateModeActive ? topics : parkedPrivateTopics;
+
+  if (passwordIsSet && settings.passwordScope === "classic") {
+    if (!cryptoState) return; // locked; nothing safe to persist right now
+    const vault = await encryptWithKey(cryptoState.key, {
+      settings,
+      topics: standardTopics,
+      privateTopics,
+    });
+    await chrome.storage.local.set({ vault });
+    // Guards against stale plaintext/privateVault copies surviving an
+    // interrupted enable/change flow.
+    await chrome.storage.local.remove(["settings", "topics", "privateVault"]);
     return;
   }
-  if (cryptoState) {
-    const vault = await encryptWithKey(cryptoState.key, { settings, topics });
-    await chrome.storage.local.set({ vault });
-    // Guards against a stale plaintext copy surviving an interrupted enable/change flow.
-    await chrome.storage.local.remove(["settings", "topics"]);
-  } else {
-    await chrome.storage.local.set({ settings, topics });
-  }
+
+  await chrome.storage.local.set({ settings, topics: standardTopics });
+  await persistPrivateTopicsIfNeeded();
 }
 
-// Hidden-messages mode: settings + non-hidden topics are always stored
-// plain (the lock screen is never shown, so there's no password-derived key
-// available at launch to decrypt anything with). Hidden-flagged topics are
-// swept into an encrypted hiddenVault on *every* save — not just when the
-// idle-lock timer fires — so on-disk storage never has a hidden topic
-// sitting in plaintext, even if the browser closes before that timer ever
-// gets a chance to run. They stay fully visible/editable in the live
-// `topics` array in memory until lockHiddenMessages() actually removes them.
-async function persistHiddenMode() {
-  const hiddenTopics = topics.filter((t) => t.hidden);
-  const visibleTopics = topics.filter((t) => !t.hidden);
-
-  if (hiddenTopics.length === 0 || !cryptoState) {
-    // Nothing to encrypt yet (no key cached this session means no topic can
-    // have been flagged hidden yet either — that always requires the key).
-    await chrome.storage.local.set({ settings, topics: visibleTopics });
-    return;
-  }
-
-  const data = await chrome.storage.local.get(["hiddenVault"]);
-  let combined = hiddenTopics;
-  if (data.hiddenVault) {
-    try {
-      const existing = await decryptWithKey(cryptoState.key, data.hiddenVault.iv, data.hiddenVault.ciphertext);
-      // A topic can be both "already vaulted from a previous save" and
-      // "currently live" (e.g. it was revealed, then re-hidden, then edited)
-      // — keep the live version for those, plus whatever else was vaulted.
-      const liveIds = new Set(hiddenTopics.map((topic) => topic.id));
-      combined = existing.filter((topic) => !liveIds.has(topic.id)).concat(hiddenTopics);
-    } catch (e) {
-      // Same key that encrypted it, so this shouldn't happen; if it does,
-      // don't let it block saving the current session's hidden topics.
-    }
-  }
-  const hiddenVault = await encryptWithKey(cryptoState.key, combined);
-  await chrome.storage.local.set({ hiddenVault, settings, topics: visibleTopics });
+async function persistPrivateTopicsIfNeeded() {
+  if (!(passwordIsSet && settings.passwordScope === "private" && cryptoState)) return;
+  if (!isPrivateModeActive) return; // nothing live to (re-)encrypt right now
+  const privateVault = await encryptWithKey(cryptoState.key, { topics, activeTopicId });
+  await chrome.storage.local.set({ privateVault });
 }
 
 async function saveSettings() {
@@ -232,7 +253,6 @@ function normalizeTopic(topic) {
   if (!Array.isArray(topic.summaries)) topic.summaries = [];
   if (typeof topic.starred !== "boolean") topic.starred = false;
   if (typeof topic.starredAt !== "number") topic.starredAt = null;
-  if (typeof topic.hidden !== "boolean") topic.hidden = false;
   return topic;
 }
 
@@ -246,7 +266,6 @@ function createTopic() {
     summaries: [],
     starred: false,
     starredAt: null,
-    hidden: false,
   };
   topics.unshift(topic);
   activeTopicId = topic.id;
@@ -281,7 +300,6 @@ async function deleteTopic(id, evt) {
   evt.stopPropagation();
   const idx = topics.findIndex((t) => t.id === id);
   if (idx === -1) return;
-  const wasHidden = topics[idx].hidden;
   topics.splice(idx, 1);
   queuedMessages = queuedMessages.filter((message) => message.topicId !== id);
   unreadTopicIds.delete(id);
@@ -290,44 +308,10 @@ async function deleteTopic(id, evt) {
     if (activeTopicId) markTopicRead(activeTopicId);
   }
   if (confirmingDeleteTopicId === id) confirmingDeleteTopicId = null;
-  // persistHiddenMode()'s merge logic can't tell "deleted" apart from "still
-  // locked away, just not loaded this session" — both look like "not in the
-  // live hiddenTopics list" — so a deleted hidden topic's encrypted copy
-  // would otherwise survive untouched in hiddenVault and reappear on the
-  // next reveal. Scrub it explicitly *before* the regular save, since
-  // saveTopics() below may also read/rewrite hiddenVault (if other hidden
-  // topics still exist) — running them out of order could let a save that
-  // read the vault first clobber this purge with stale merged data.
-  if (wasHidden) {
-    await purgeDeletedHiddenTopic(id);
-  }
   await saveTopics();
   renderTopicList();
   renderMessages();
   updateHeader();
-}
-
-// Removes a single topic id from hiddenVault directly, independent of the
-// normal save flow, since a delete needs to definitively erase it rather
-// than have persistHiddenMode's merge potentially resurrect it.
-async function purgeDeletedHiddenTopic(id) {
-  if (!cryptoState) return; // shouldn't happen: a live hidden topic implies a cached key
-  const data = await chrome.storage.local.get(["hiddenVault"]);
-  if (!data.hiddenVault) return;
-  try {
-    const existing = await decryptWithKey(cryptoState.key, data.hiddenVault.iv, data.hiddenVault.ciphertext);
-    const filtered = existing.filter((topic) => topic.id !== id);
-    if (filtered.length === existing.length) return; // wasn't vaulted anyway
-    if (filtered.length === 0) {
-      await chrome.storage.local.remove(["hiddenVault"]);
-    } else {
-      const hiddenVault = await encryptWithKey(cryptoState.key, filtered);
-      await chrome.storage.local.set({ hiddenVault });
-    }
-  } catch (e) {
-    // Can't decrypt with the current key — leave the vault alone rather than
-    // risk destroying data we can't verify.
-  }
 }
 
 function requestDeleteTopic(id, evt) {
@@ -368,7 +352,7 @@ function renderTopicList() {
     });
 
     const title = document.createElement("span");
-    title.className = "topic-title" + (topic.hidden ? " hidden-flag" : "");
+    title.className = "topic-title";
     title.textContent = topic.title;
     title.addEventListener("dblclick", (e) => {
       e.stopPropagation();
@@ -421,25 +405,6 @@ function renderTopicList() {
 
       const actions = document.createElement("div");
       actions.className = "topic-actions";
-
-      if (settings.hiddenMessagesEnabled) {
-        const hideBtn = document.createElement("button");
-        hideBtn.className = "topic-hidden-toggle" + (topic.hidden ? " active" : "");
-        hideBtn.title = t(topic.hidden ? "hidden.unhide_title" : "hidden.hide_title");
-        // Same inherited color as the other buttons in both states — a
-        // colored icon would be invisible against the active/blue row
-        // background. "Hidden" is conveyed only by the slash, not by color.
-        hideBtn.innerHTML = topic.hidden
-          ? '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
-            '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
-            '<circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
-            '<line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>'
-          : '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
-            '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
-            '<circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
-        hideBtn.addEventListener("click", (e) => toggleHiddenTopic(topic.id, e));
-        actions.appendChild(hideBtn);
-      }
 
       actions.append(del, starBtn);
 
@@ -813,20 +778,13 @@ function compressibleContentLength(topic) {
   return getCompressibleMessages(topic).reduce((sum, m) => sum + (m.content ? m.content.length : 0), 0);
 }
 
-// Hidden and non-hidden topics have entirely separate star pools: a hidden
-// topic's summary is only ever injected into other hidden topics, and a
-// non-hidden topic's only into other non-hidden ones — never across the
-// boundary, so a starred sensitive/hidden topic can't leak its content into
-// the context of an ordinary, fully-visible conversation.
+// Standard and private topics have entirely separate star pools "for free":
+// `topics` only ever holds whichever list is currently active (see the
+// swap-based private-mode state above), so a starred private topic's
+// summary can never be injected into a standard conversation, or vice versa.
 function starredTopicsForInjection(currentTopic) {
   return topics
-    .filter(
-      (cand) =>
-        cand.starred &&
-        cand.id !== currentTopic.id &&
-        cand.hidden === currentTopic.hidden &&
-        getLatestSummary(cand)
-    )
+    .filter((cand) => cand.starred && cand.id !== currentTopic.id && getLatestSummary(cand))
     .sort((a, b) => (a.starredAt || 0) - (b.starredAt || 0));
 }
 
@@ -948,9 +906,9 @@ async function toggleStarTopic(topicId, evt) {
     return;
   }
 
-  // Separate cap per pool (hidden vs. non-hidden) — starring a hidden topic
-  // doesn't compete with the 5 slots used by ordinary starred topics.
-  const starredCount = topics.filter((cand) => cand.starred && cand.hidden === topic.hidden).length;
+  // Separate cap per pool (standard vs. private) since `topics` only ever
+  // holds whichever list is currently active.
+  const starredCount = topics.filter((cand) => cand.starred).length;
   if (starredCount >= MAX_STARRED_TOPICS) {
     showToast(t("star.max_reached"));
     return;
@@ -1363,6 +1321,14 @@ function openSettings() {
   el.extraParamsMsg.textContent = "";
   el.autoLockMinutes.value = settings.autoLockMinutes || DEFAULT_SETTINGS.autoLockMinutes;
   el.autoCompressThreshold.value = settings.autoCompressThreshold || "";
+  el.hidePrivateModeButtonToggle.checked = !!settings.hidePrivateModeButton;
+  // Once the button is actually hidden, this field only shows up from the
+  // private view itself (matches the button's own visibility); while it's
+  // still off, there's nothing to hide it from, so show it everywhere.
+  el.privateModeSettingsField.classList.toggle(
+    "hidden",
+    !!settings.hidePrivateModeButton && !isPrivateModeActive
+  );
   populateDefaultModelSelect(settings.models, settings.defaultModel);
   refreshPasswordUI();
   el.settingsModal.classList.remove("hidden");
@@ -1383,7 +1349,33 @@ function closeSettings() {
   el.settingsModal.classList.add("hidden");
 }
 
+// Password fields sit in their own inline forms with their own dedicated
+// buttons (启用/修改/关闭密码保护), which take effect immediately — unlike
+// every other field on this page, they are NOT covered by the bottom "保存"
+// button. Silently discarding whatever was typed there when the user clicks
+// "保存" instead is exactly the trap that caused real confusion, so refuse
+// the save and point at the correct button rather than losing the input.
+function passwordFieldsPendingLayer() {
+  if (!el.passwordSetupForm.classList.contains("hidden")) {
+    if (el.newPassword1.value || el.newPassword2.value) return "setup";
+  }
+  if (!el.passwordManageForm.classList.contains("hidden")) {
+    if (el.currentPasswordForChange.value || el.changePassword1.value || el.changePassword2.value) {
+      return "manage";
+    }
+  }
+  return null;
+}
+
 async function handleSaveSettings() {
+  const pendingPasswordLayer = passwordFieldsPendingLayer();
+  if (pendingPasswordLayer) {
+    showPasswordMsg(
+      t(pendingPasswordLayer === "setup" ? "pwd.use_enable_btn" : "pwd.use_change_or_disable_btn")
+    );
+    return;
+  }
+
   const extraRaw = el.extraParams.value;
   const parsedExtra = parseExtraParams(extraRaw);
   if (!parsedExtra.ok) {
@@ -1539,23 +1531,45 @@ async function handleImportFileSelected() {
 }
 
 // ---------- Password protection ----------
+//
+// Exactly ONE password exists at a time. settings.passwordScope picks what
+// it protects; the radio choosing that scope is only changeable while no
+// password is set (see refreshPasswordUI/handlePasswordScopeChange below) —
+// switching scope always requires disabling first, so there is never any
+// ambiguity about which one is "actually" active.
 
 function refreshPasswordUI() {
   el.passwordMsg.textContent = "";
-  // passwordIsSet (not cryptoState) decides which form to show: in hidden-
-  // messages mode a password can be fully configured while cryptoState is
-  // still null (no key cached this session yet), and this form must still
-  // read as "protection enabled", not prompt to set up a new password.
+  // Once a password is configured, the whole section only shows up while
+  // currently decrypted this session (cryptoState populated) — e.g. under
+  // private scope, before entering private mode with the password, Settings
+  // gives no hint that password protection exists at all.
+  if (passwordIsSet && !cryptoState) {
+    el.passwordField.classList.add("hidden");
+    return;
+  }
+  el.passwordField.classList.remove("hidden");
+  const scope = settings.passwordScope === "private" ? "private" : "classic";
+  el.passwordLayerClassic.checked = scope === "classic";
+  el.passwordLayerPrivate.checked = scope === "private";
+  // Locked to whichever scope is active once a password is set — the only
+  // way to pick the other scope is to disable protection first.
+  el.passwordLayerClassic.disabled = passwordIsSet;
+  el.passwordLayerPrivate.disabled = passwordIsSet;
+
   if (passwordIsSet) {
-    el.passwordStatus.textContent = t("pwd.status_enabled");
+    el.passwordStatus.textContent = t(
+      scope === "private" ? "pwd.status_enabled_private" : "pwd.status_enabled"
+    );
     el.passwordSetupForm.classList.add("hidden");
     el.passwordManageForm.classList.remove("hidden");
     el.currentPasswordForChange.value = "";
     el.changePassword1.value = "";
     el.changePassword2.value = "";
-    el.hiddenMessagesToggle.checked = !!settings.hiddenMessagesEnabled;
   } else {
-    el.passwordStatus.textContent = t("pwd.status_disabled");
+    el.passwordStatus.textContent = t(
+      scope === "private" ? "pwd.status_disabled_private" : "pwd.status_disabled"
+    );
     el.passwordSetupForm.classList.remove("hidden");
     el.passwordManageForm.classList.add("hidden");
     el.newPassword1.value = "";
@@ -1563,8 +1577,36 @@ function refreshPasswordUI() {
   }
 }
 
+// Only takes effect while no password is configured yet (the radios are
+// disabled otherwise) — picks which scope "开启密码保护" will set up next.
+function handlePasswordScopeChange() {
+  if (passwordIsSet) return;
+  settings.passwordScope = el.passwordLayerPrivate.checked ? "private" : "classic";
+  saveSettings();
+  refreshPasswordUI();
+}
+
 function showPasswordMsg(text) {
   el.passwordMsg.textContent = text;
+}
+
+// Tests a candidate password against the single dedicated passwordCheck
+// blob (rather than the full vault, which may not even exist under private
+// scope) and returns the derived key/salt on success so callers can reuse
+// it without deriving twice. Reads fresh from storage rather than relying
+// on cryptoState already being populated, since callers may run before any
+// key has been cached this session.
+async function tryDerivePasswordKey(password) {
+  const data = await chrome.storage.local.get(["vaultSalt", "passwordCheck"]);
+  if (!data.vaultSalt || !data.passwordCheck) return null;
+  try {
+    const salt = new Uint8Array(base64ToBuf(data.vaultSalt));
+    const key = await deriveKeyFromPassword(password, salt);
+    await decryptWithKey(key, data.passwordCheck.iv, data.passwordCheck.ciphertext);
+    return { key, salt };
+  } catch (e) {
+    return null;
+  }
 }
 
 async function handleEnablePassword() {
@@ -1581,11 +1623,15 @@ async function handleEnablePassword() {
 
   const salt = randomBytes(16);
   const key = await deriveKeyFromPassword(p1, salt);
+  const passwordCheck = await encryptWithKey(key, { check: true });
+
   cryptoState = { key, salt };
   passwordIsSet = true;
-
-  const passwordCheck = await encryptWithKey(key, { check: true });
+  settings.passwordScope = el.passwordLayerPrivate.checked ? "private" : "classic";
   await chrome.storage.local.set({ vaultSalt: bufToBase64(salt), passwordCheck });
+  // Classic scope: encrypts settings + both topic lists into `vault`.
+  // Private scope: settings/standard topics stay plain; sweeps the live
+  // private list to `privateVault` if private mode happens to be active.
   await persistState();
 
   resetIdleTimer();
@@ -1593,31 +1639,13 @@ async function handleEnablePassword() {
   refreshPasswordUI();
 }
 
-// Mode-agnostic password check: tests against a small dedicated encrypted
-// blob rather than the full vault, since in hidden-messages mode the vault
-// may not exist at all (settings/topics are stored plain, only hiddenVault
-// is encrypted, and that may not exist yet either). Reads vaultSalt fresh
-// from storage rather than relying on cryptoState already being populated,
-// since callers may run before any key has been cached this session.
-async function verifyCurrentPassword(password) {
-  const data = await chrome.storage.local.get(["vaultSalt", "passwordCheck"]);
-  if (!data.vaultSalt || !data.passwordCheck) return false;
-  try {
-    const salt = new Uint8Array(base64ToBuf(data.vaultSalt));
-    const testKey = await deriveKeyFromPassword(password, salt);
-    await decryptWithKey(testKey, data.passwordCheck.iv, data.passwordCheck.ciphertext);
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
 async function handleChangePassword() {
   const oldP = el.currentPasswordForChange.value;
   const newP1 = el.changePassword1.value;
   const newP2 = el.changePassword2.value;
 
-  if (!(await verifyCurrentPassword(oldP))) {
+  const verified = await tryDerivePasswordKey(oldP);
+  if (!verified) {
     showPasswordMsg(t("pwd.current_wrong"));
     return;
   }
@@ -1634,222 +1662,210 @@ async function handleChangePassword() {
     return;
   }
 
-  // Carry the hidden vault forward (if any) so it stays decryptable after the
-  // password/salt rotate below — otherwise any not-yet-revealed hidden topics
-  // would become permanently unrecoverable.
-  let migratedHiddenTopics = null;
-  if (settings.hiddenMessagesEnabled) {
-    const data = await chrome.storage.local.get(["vaultSalt", "hiddenVault"]);
-    if (data.hiddenVault) {
-      const oldSalt = new Uint8Array(base64ToBuf(data.vaultSalt));
-      const oldKey = await deriveKeyFromPassword(oldP, oldSalt);
-      migratedHiddenTopics = await decryptWithKey(oldKey, data.hiddenVault.iv, data.hiddenVault.ciphertext);
-    }
-  }
-
   const newSalt = randomBytes(16);
   const newKey = await deriveKeyFromPassword(newP1, newSalt);
-  cryptoState = { key: newKey, salt: newSalt };
   const passwordCheck = await encryptWithKey(newKey, { check: true });
-  const updates = { vaultSalt: bufToBase64(newSalt), passwordCheck };
-  if (migratedHiddenTopics) {
-    updates.hiddenVault = await encryptWithKey(newKey, migratedHiddenTopics);
+  cryptoState = { key: newKey, salt: newSalt };
+  await chrome.storage.local.set({ vaultSalt: bufToBase64(newSalt), passwordCheck });
+
+  if (settings.passwordScope === "private" && !isPrivateModeActive) {
+    // No live copy this session to re-persist — decrypt the existing
+    // privateVault with the just-verified OLD key and re-encrypt it under
+    // the new one, so nothing not currently live becomes unrecoverable.
+    const data = await chrome.storage.local.get(["privateVault"]);
+    if (data.privateVault) {
+      const existing = await decryptWithKey(verified.key, data.privateVault.iv, data.privateVault.ciphertext);
+      const privateVault = await encryptWithKey(newKey, existing);
+      await chrome.storage.local.set({ privateVault });
+    }
+  } else {
+    await persistState(); // re-encrypts the classic vault, or the live private list, under the new key
   }
-  await chrome.storage.local.set(updates);
-  await persistState();
 
   showPasswordMsg(t("pwd.changed_msg"));
   refreshPasswordUI();
 }
 
 async function handleDisablePassword() {
-  if (settings.hiddenMessagesEnabled) {
-    showPasswordMsg(t("pwd.disable_requires_hidden_off"));
+  const oldP = el.currentPasswordForChange.value;
+  const verified = await tryDerivePasswordKey(oldP);
+  if (!verified) {
+    showPasswordMsg(t("pwd.current_wrong"));
     return;
   }
 
-  const oldP = el.currentPasswordForChange.value;
-  if (!(await verifyCurrentPassword(oldP))) {
-    showPasswordMsg(t("pwd.current_wrong"));
-    return;
+  if (settings.passwordScope === "private") {
+    // Disabling removes the only thing keeping private chats persisted —
+    // they get restored into memory below so nothing vanishes immediately,
+    // but from this point on they're ephemeral again (gone on refresh or
+    // browser close) unless protection is turned back on. Confirm first,
+    // since that's a real, easy-to-miss data-loss risk.
+    if (!confirm(t("pwd.disable_private_confirm"))) {
+      showPasswordMsg("");
+      return;
+    }
+    // Decrypt and fold any still-vaulted private topics back into the live
+    // in-memory list first, so nothing is ever silently stranded behind a
+    // disabled password.
+    const data = await chrome.storage.local.get(["privateVault"]);
+    if (data.privateVault) {
+      const restored = await decryptWithKey(verified.key, data.privateVault.iv, data.privateVault.ciphertext);
+      const restoredTopics = (restored.topics || []).map(normalizeTopic);
+      if (isPrivateModeActive) {
+        const existingIds = new Set(topics.map((topic) => topic.id));
+        topics = topics.concat(restoredTopics.filter((topic) => !existingIds.has(topic.id)));
+        topics.sort((a, b) => b.createdAt - a.createdAt);
+      } else {
+        const existingIds = new Set(parkedPrivateTopics.map((topic) => topic.id));
+        parkedPrivateTopics = parkedPrivateTopics.concat(
+          restoredTopics.filter((topic) => !existingIds.has(topic.id))
+        );
+        parkedPrivateTopics.sort((a, b) => b.createdAt - a.createdAt);
+      }
+    }
+    await chrome.storage.local.remove(["privateVault"]);
+    if (isPrivateModeActive) {
+      renderTopicList();
+      renderMessages();
+      updateHeader();
+    }
   }
 
   cryptoState = null;
   passwordIsSet = false;
-  await chrome.storage.local.set({ settings, topics });
+  const standardTopics = isPrivateModeActive ? parkedStandardTopics : topics;
+  await chrome.storage.local.set({ settings, topics: standardTopics });
   await chrome.storage.local.remove(["vault", "vaultSalt", "passwordCheck"]);
   clearTimeout(idleTimer);
 
+  resetIdleTimer();
   showPasswordMsg(t("pwd.disabled_msg"));
   refreshPasswordUI();
 }
 
-// ---------- Hidden messages mode ----------
+// ---------- Private mode ----------
 
-// Enabling requires no extra prompt: reaching Settings in classic mode
-// already means the app was unlocked (cryptoState is populated), and this
-// just changes how persistState()/idle-lock behave going forward.
-async function handleEnableHiddenMessages() {
-  if (!cryptoState) {
-    el.hiddenMessagesToggle.checked = false;
-    return;
-  }
-  settings.hiddenMessagesEnabled = true;
-  // Switch off the whole-app vault immediately — from here on, persistState()
-  // stores settings/topics plain and only hidden-flagged topics get encrypted.
-  await chrome.storage.local.set({ settings, topics });
-  await chrome.storage.local.remove(["vault"]);
-  showPasswordMsg(t("hidden.enabled_msg"));
-  renderTopicList();
+function applyPrivateModeButtonVisibility() {
+  el.privateModeBtn.classList.toggle("hidden", !!settings.hidePrivateModeButton);
 }
 
-// Disabling requires proving the current password (reusing the same field
-// used for changing/disabling password protection) and decrypts+restores
-// every still-hidden topic before turning the feature off, so nothing is
-// ever silently stranded behind a disabled feature.
-async function handleDisableHiddenMessages() {
-  const password = el.currentPasswordForChange.value;
-  if (!password) {
-    showPasswordMsg(t("hidden.enter_password_to_disable"));
-    el.hiddenMessagesToggle.checked = true;
-    return;
-  }
-  if (!(await verifyCurrentPassword(password))) {
-    showPasswordMsg(t("pwd.current_wrong"));
-    el.hiddenMessagesToggle.checked = true;
-    return;
-  }
-
-  const data = await chrome.storage.local.get(["vaultSalt", "hiddenVault"]);
-  const salt = new Uint8Array(base64ToBuf(data.vaultSalt));
-  const key = await deriveKeyFromPassword(password, salt);
-  cryptoState = { key, salt };
-
-  if (data.hiddenVault) {
-    const restored = (await decryptWithKey(key, data.hiddenVault.iv, data.hiddenVault.ciphertext)).map(
-      normalizeTopic
-    );
-    const existingIds = new Set(topics.map((topic) => topic.id));
-    topics = topics.concat(restored.filter((topic) => !existingIds.has(topic.id)));
-  }
-  for (const topic of topics) topic.hidden = false;
-  topics.sort((a, b) => b.createdAt - a.createdAt);
-  await chrome.storage.local.remove(["hiddenVault"]);
-
-  settings.hiddenMessagesEnabled = false;
-  await persistState(); // now re-encrypts settings+topics into the classic vault
-
-  renderTopicList();
-  renderMessages();
-  updateHeader();
-  resetIdleTimer();
-  showPasswordMsg(t("hidden.disabled_msg"));
+function applyPrivateModeVisual() {
+  el.app.classList.toggle("private-mode-active", isPrivateModeActive);
+  el.privateModeBtn.classList.toggle("active", isPrivateModeActive);
 }
 
-// ---------- Eye toggle + hidden-unlock modal ----------
+// Swaps the STANDARD list out into the parked holders and swaps the PRIVATE
+// list (already parked, or just decrypted by promptPrivateUnlock) into the
+// live `topics`/`activeTopicId` — every other function in this file keeps
+// operating on `topics` with no idea which logical list it's looking at.
+function enterPrivateMode() {
+  parkedStandardTopics = topics;
+  parkedStandardActiveTopicId = activeTopicId;
+  topics = parkedPrivateTopics || [];
+  activeTopicId = parkedPrivateActiveTopicId;
+  parkedPrivateTopics = null;
+  parkedPrivateActiveTopicId = null;
+  isPrivateModeActive = true;
 
-// Resolves once the user confirms or cancels the password prompt.
-let hiddenUnlockResolve = null;
-// "verify": just prove the password and cache the key (used when marking a
-// topic hidden for the first time this session — nothing to merge back).
-// "reveal": also decrypts hiddenVault and merges its topics back into view
-// (used by the triple-click gesture on the search box).
-let hiddenUnlockPurpose = null;
-
-function promptHiddenUnlock(purpose) {
-  return new Promise((resolve) => {
-    hiddenUnlockPurpose = purpose;
-    hiddenUnlockResolve = resolve;
-    el.hiddenUnlockPassword.value = "";
-    el.hiddenUnlockError.textContent = "";
-    el.hiddenUnlockModal.classList.remove("hidden");
-    el.hiddenUnlockPassword.focus();
-  });
-}
-
-function closeHiddenUnlockModal(result) {
-  el.hiddenUnlockModal.classList.add("hidden");
-  const resolve = hiddenUnlockResolve;
-  hiddenUnlockResolve = null;
-  hiddenUnlockPurpose = null;
-  if (resolve) resolve(result);
-}
-
-async function handleHiddenUnlockConfirm() {
-  const password = el.hiddenUnlockPassword.value;
-  const data = await chrome.storage.local.get(["vaultSalt", "passwordCheck", "hiddenVault"]);
-  if (!data.vaultSalt || !data.passwordCheck) {
-    el.hiddenUnlockError.textContent = t("unlock.no_data");
-    return;
-  }
-  const salt = new Uint8Array(base64ToBuf(data.vaultSalt));
-  const key = await deriveKeyFromPassword(password, salt);
-  try {
-    await decryptWithKey(key, data.passwordCheck.iv, data.passwordCheck.ciphertext);
-  } catch (e) {
-    el.hiddenUnlockError.textContent = t("unlock.wrong");
-    return;
-  }
-
-  cryptoState = { key, salt };
-
-  if (hiddenUnlockPurpose === "reveal" && data.hiddenVault) {
-    const restored = (await decryptWithKey(key, data.hiddenVault.iv, data.hiddenVault.ciphertext)).map(
-      normalizeTopic
-    );
-    // Defensive: never end up with two entries for the same id, however that
-    // might happen.
-    const existingIds = new Set(topics.map((topic) => topic.id));
-    topics = topics.concat(restored.filter((topic) => !existingIds.has(topic.id)));
-    topics.sort((a, b) => b.createdAt - a.createdAt);
-    // Persist immediately: this re-encrypts the still-hidden topics (their
-    // `hidden` flag is untouched by revealing — they stay visible for the
-    // rest of this session but will be swept away again at the next lock)
-    // into a fresh hiddenVault via persistHiddenMode(). Not calling this
-    // here was the bug — it left the old hiddenVault deleted with nothing
-    // written back yet, so anything revealed but not otherwise re-saved
-    // (e.g. by sending a message) before the next lock event was lost for
-    // good.
-    await saveTopics();
+  if (topics.length === 0) {
+    createTopic(); // sets activeTopicId and renders the topic list itself
+  } else {
+    if (!topics.find((topic) => topic.id === activeTopicId)) activeTopicId = topics[0].id;
+    markTopicRead(activeTopicId);
     renderTopicList();
     renderMessages();
     updateHeader();
   }
-
+  applyPrivateModeVisual();
   resetIdleTimer();
-  closeHiddenUnlockModal(true);
 }
 
-async function toggleHiddenTopic(topicId, evt) {
-  evt.stopPropagation();
-  const topic = topics.find((cand) => cand.id === topicId);
-  if (!topic) return;
+// A manual exit (the user toggling private mode off again) — unlike the
+// idle-timeout auto-exit, this only parks the private list, it never wipes
+// it, since there's nothing forcing a re-unlock this session.
+async function exitPrivateMode() {
+  await persistState(); // sweeps the private list into the vault/privateVault first, if a password is configured
+  parkedPrivateTopics = topics;
+  parkedPrivateActiveTopicId = activeTopicId;
+  topics = parkedStandardTopics || [];
+  activeTopicId = parkedStandardActiveTopicId;
+  parkedStandardTopics = null;
+  parkedStandardActiveTopicId = null;
+  isPrivateModeActive = false;
 
-  if (topic.hidden) {
-    topic.hidden = false;
-    saveTopics();
-    renderTopicList();
+  renderTopicList();
+  renderMessages();
+  updateHeader();
+  applyPrivateModeVisual();
+  resetIdleTimer();
+}
+
+// Under classic scope, entering private mode needs no extra prompt — the
+// whole session (both lists together) is already authenticated. Under
+// private scope, every single entry attempt re-prompts for the password —
+// there is no session-level "already unlocked" caching for it, by design.
+async function togglePrivateMode() {
+  if (isPrivateModeActive) {
+    await exitPrivateMode();
     return;
   }
-
-  if (!cryptoState) {
-    const ok = await promptHiddenUnlock("verify");
+  if (passwordIsSet && settings.passwordScope === "private") {
+    const ok = await promptPrivateUnlock();
     if (!ok) return;
   }
-
-  topic.hidden = true;
-  saveTopics();
-  renderTopicList();
-  resetIdleTimer();
+  enterPrivateMode();
 }
 
-// Triple-click (3 clicks within ~600ms) on the topic search box is the
-// secret gesture to reveal hidden topics — deliberately not surfaced
-// anywhere else in the UI.
+// Resolves once the user confirms or cancels the password prompt.
+let privateUnlockResolve = null;
+
+function promptPrivateUnlock() {
+  return new Promise((resolve) => {
+    privateUnlockResolve = resolve;
+    el.privateUnlockPassword.value = "";
+    el.privateUnlockError.textContent = "";
+    el.privateUnlockModal.classList.remove("hidden");
+    el.privateUnlockPassword.focus();
+  });
+}
+
+function closePrivateUnlockModal(result) {
+  el.privateUnlockModal.classList.add("hidden");
+  const resolve = privateUnlockResolve;
+  privateUnlockResolve = null;
+  if (resolve) resolve(result);
+}
+
+async function handlePrivateUnlockConfirm() {
+  const password = el.privateUnlockPassword.value;
+  const verified = await tryDerivePasswordKey(password);
+  if (!verified) {
+    el.privateUnlockError.textContent = t("unlock.wrong");
+    return;
+  }
+  cryptoState = verified;
+
+  const data = await chrome.storage.local.get(["privateVault"]);
+  if (data.privateVault) {
+    try {
+      const payload = await decryptWithKey(verified.key, data.privateVault.iv, data.privateVault.ciphertext);
+      parkedPrivateTopics = (payload.topics || []).map(normalizeTopic);
+      parkedPrivateActiveTopicId = payload.activeTopicId || null;
+    } catch (e) {
+      // Shouldn't happen — same key that just verified against passwordCheck.
+    }
+  }
+
+  closePrivateUnlockModal(true);
+}
+
+// Triple-click (3 clicks within ~600ms) on the topic search box: the only
+// entry gesture when "隐藏隐私模式按钮" is on (mutually exclusive with the
+// header button, not an addition to it).
 let searchClickCount = 0;
 let searchClickTimer = null;
 function handleSearchBoxClick() {
-  if (!settings.hiddenMessagesEnabled) return;
+  if (!settings.hidePrivateModeButton) return;
   searchClickCount += 1;
   clearTimeout(searchClickTimer);
   searchClickTimer = setTimeout(() => {
@@ -1858,7 +1874,7 @@ function handleSearchBoxClick() {
   if (searchClickCount >= 3) {
     searchClickCount = 0;
     clearTimeout(searchClickTimer);
-    void promptHiddenUnlock("reveal");
+    void togglePrivateMode();
   }
 }
 
@@ -1879,6 +1895,11 @@ function hideLockScreen() {
   el.app.classList.remove("hidden");
 }
 
+// Classic scope only (private scope never shows this screen at all — see
+// resetIdleTimer). The single password protects everything uniformly, so
+// idle timeout wipes BOTH lists together and always lands back on the
+// standard view after unlocking; there is no "survives the lock" case to
+// special-case anymore now that private mode isn't a separate password.
 function lockApp() {
   if (!cryptoState) return;
   if (isStreaming && abortController) {
@@ -1889,6 +1910,12 @@ function lockApp() {
   settings = { ...DEFAULT_SETTINGS };
   topics = [];
   activeTopicId = null;
+  isPrivateModeActive = false;
+  parkedStandardTopics = null;
+  parkedStandardActiveTopicId = null;
+  parkedPrivateTopics = [];
+  parkedPrivateActiveTopicId = null;
+  applyPrivateModeVisual();
   el.messages.innerHTML = "";
   el.topicList.innerHTML = "";
   hideScrollIndicator();
@@ -1910,6 +1937,9 @@ async function handleUnlock() {
     const payload = await decryptWithKey(key, data.vault.iv, data.vault.ciphertext);
     settings = { ...DEFAULT_SETTINGS, ...(payload.settings || {}) };
     topics = (payload.topics || []).map(normalizeTopic);
+    parkedPrivateTopics = (payload.privateTopics || []).map(normalizeTopic);
+    parkedPrivateActiveTopicId = null;
+    isPrivateModeActive = false;
     cryptoState = { key, salt };
     hideLockScreen();
     startApp();
@@ -1921,42 +1951,49 @@ async function handleUnlock() {
 
 function resetIdleTimer() {
   clearTimeout(idleTimer);
-  if (!cryptoState) return;
+  if (!passwordIsSet) return; // no protection configured at all — nothing to arm
   const minutes = Math.min(
     1440,
     Math.max(1, Number(settings.autoLockMinutes) || DEFAULT_SETTINGS.autoLockMinutes)
   );
-  const handler = settings.hiddenMessagesEnabled ? lockHiddenMessages : lockApp;
-  idleTimer = setTimeout(handler, minutes * 60 * 1000);
-}
-
-// Hidden-messages mode's equivalent of lockApp(): no lock screen, nothing
-// else interrupted. Hidden-flagged topics are already kept encrypted in
-// hiddenVault by every persistState() call, so this just needs to drop them
-// from the live `topics` array and clear the cached key — no re-encryption
-// necessary here.
-function lockHiddenMessages() {
-  clearTimeout(idleTimer);
-  if (!cryptoState) return;
-  const hiddenIds = new Set(topics.filter((t) => t.hidden).map((t) => t.id));
-  if (hiddenIds.size === 0) {
-    cryptoState = null;
+  if (settings.passwordScope === "private") {
+    // Private scope never shows the full lock screen — only viewing private
+    // mode itself can time out, silently returning to the standard list.
+    if (isPrivateModeActive) {
+      idleTimer = setTimeout(autoExitPrivateModeOnTimeout, minutes * 60 * 1000);
+    }
     return;
   }
-  if (isStreaming && abortController && activeRequest && hiddenIds.has(activeRequest.topicId)) {
+  if (!cryptoState) return;
+  idleTimer = setTimeout(lockApp, minutes * 60 * 1000);
+}
+
+// Private scope's idle-timeout equivalent of lockApp(): no lock screen,
+// nothing else interrupted — persists the private list first (a real
+// encrypted round-trip, since private scope is configured), then actually
+// WIPES it from memory. Re-entering afterward requires the password again
+// to decrypt from privateVault, same as closing the browser would.
+async function autoExitPrivateModeOnTimeout() {
+  if (!isPrivateModeActive) return;
+  if (isStreaming && abortController && activeRequest && topics.some((t) => t.id === activeRequest.topicId)) {
     abortReason = "lock";
     abortController.abort();
   }
-  topics = topics.filter((t) => !hiddenIds.has(t.id));
-  // Always land on the first remaining topic once hiding triggers, rather
-  // than only when the topic being viewed happened to be one of the hidden
-  // ones — keeps the post-hide state predictable regardless of what was on
-  // screen at the time.
-  activeTopicId = topics.length ? topics[0].id : null;
+  await persistPrivateTopicsIfNeeded();
+  topics = parkedStandardTopics || [];
+  activeTopicId = parkedStandardActiveTopicId;
+  parkedStandardTopics = null;
+  parkedStandardActiveTopicId = null;
+  isPrivateModeActive = false;
   cryptoState = null;
+  parkedPrivateTopics = [];
+  parkedPrivateActiveTopicId = null;
+
+  applyPrivateModeVisual();
   renderTopicList();
   renderMessages();
   updateHeader();
+  resetIdleTimer();
 }
 
 ["click", "keydown", "mousemove", "input"].forEach((evt) => {
@@ -1996,13 +2033,15 @@ el.modelList.addEventListener("input", () => {
 el.enablePasswordBtn.addEventListener("click", handleEnablePassword);
 el.changePasswordBtn.addEventListener("click", handleChangePassword);
 el.disablePasswordBtn.addEventListener("click", handleDisablePassword);
-el.hiddenMessagesToggle.addEventListener("change", () => {
-  if (el.hiddenMessagesToggle.checked) {
-    void handleEnableHiddenMessages();
-  } else {
-    void handleDisableHiddenMessages();
-  }
+el.passwordLayerClassic.addEventListener("change", handlePasswordScopeChange);
+el.passwordLayerPrivate.addEventListener("change", handlePasswordScopeChange);
+
+el.hidePrivateModeButtonToggle.addEventListener("change", () => {
+  settings.hidePrivateModeButton = el.hidePrivateModeButtonToggle.checked;
+  applyPrivateModeButtonVisibility();
+  saveSettings();
 });
+el.privateModeBtn.addEventListener("click", () => void togglePrivateMode());
 
 el.unlockBtn.addEventListener("click", handleUnlock);
 installImeGuard(el.unlockPassword);
@@ -2014,14 +2053,14 @@ el.unlockPassword.addEventListener("keydown", (e) => {
   }
 });
 
-el.hiddenUnlockConfirmBtn.addEventListener("click", handleHiddenUnlockConfirm);
-el.closeHiddenUnlockBtn.addEventListener("click", () => closeHiddenUnlockModal(false));
-installImeGuard(el.hiddenUnlockPassword);
-el.hiddenUnlockPassword.addEventListener("keydown", (e) => {
+el.privateUnlockConfirmBtn.addEventListener("click", handlePrivateUnlockConfirm);
+el.closePrivateUnlockBtn.addEventListener("click", () => closePrivateUnlockModal(false));
+installImeGuard(el.privateUnlockPassword);
+el.privateUnlockPassword.addEventListener("keydown", (e) => {
   if (isImeConfirming(e)) return;
   if (e.key === "Enter") {
     e.preventDefault();
-    handleHiddenUnlockConfirm();
+    handlePrivateUnlockConfirm();
   }
 });
 
@@ -2069,6 +2108,8 @@ function startApp() {
   applySidebarState();
   applyFontSize();
   applyChatWidth();
+  applyPrivateModeButtonVisibility();
+  applyPrivateModeVisual();
   populateModelSelect();
   autoResizeInput();
 
@@ -2092,6 +2133,13 @@ function startApp() {
   applyI18n();
   const data = await chrome.storage.local.get(["vaultSalt", "vault", "settings", "topics"]);
   passwordIsSet = !!data.vaultSalt;
+  // Private mode always starts inactive and empty on a fresh load, regardless
+  // of whether the password's scope is "private" — re-entering decrypts
+  // privateVault. Whether the classic lock screen shows depends purely on
+  // whether a `vault` blob actually exists (only classic scope produces
+  // one), not on passwordIsSet itself.
+  parkedPrivateTopics = [];
+  parkedPrivateActiveTopicId = null;
   if (data.vaultSalt && data.vault) {
     showLockScreen();
     return;
