@@ -149,7 +149,7 @@
 
         <label class="field">
           <span data-i18n="settings.auto_compress">对话自动压缩阈值（字，留空关闭）</span>
-          <input id="autoCompressThreshold" type="number" min="1" step="100" placeholder="例如 96000" />
+          <input id="autoCompressThreshold" type="number" min="10000" step="1000" placeholder="例如 96000" />
           <small class="field-hint" data-i18n="settings.auto_compress_hint">发送新消息前，若当前话题未压缩的对话内容超过这个字数，会先自动请求当前模型生成摘要，再继续发送。</small>
         </label>
 

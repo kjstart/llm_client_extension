@@ -333,7 +333,7 @@ function renderTopicList() {
     });
 
     const title = document.createElement("span");
-    title.className = "topic-title";
+    title.className = "topic-title" + (topic.hidden ? " hidden-flag" : "");
     title.textContent = topic.title;
     title.addEventListener("dblclick", (e) => {
       e.stopPropagation();
@@ -821,21 +821,19 @@ function buildApiMessages(topic) {
 }
 
 // Summarizes a topic's compressible tail — everything since the last summary
-// except the most recent 2 raw messages, which stay untouched (see
-// getCompressibleMessages) — rolled on top of the previous summary, if any,
-// via one non-streaming request to its own model, then stores the result as
-// a new checkpoint. Used both by the auto-compress threshold check and by
-// star-triggering a topic with no summary yet.
-// `force: true` ignores the last-2-messages exclusion and summarizes the
-// entire tail instead — used when starring a topic that's too short (<=2
-// messages) for the normal rule to ever produce anything compressible,
-// which would otherwise permanently block it from ever getting a summary.
-async function compressTopic(topic, { force = false } = {}) {
+// except the most recent 2 raw messages, which stay untouched, unless the
+// topic is short enough that getCompressibleMessages skips that exclusion
+// and returns the whole tail instead — rolled on top of the previous
+// summary, if any, via one non-streaming request to its own model, then
+// stores the result as a new checkpoint. Used both by the auto-compress
+// threshold check and by star-triggering a topic with no summary yet.
+async function compressTopic(topic) {
   if (!settings.apiKey) {
     openSettings();
     return false;
   }
-  const tail = force ? getTailMessages(topic) : getCompressibleMessages(topic);
+  const fullTail = getTailMessages(topic);
+  const tail = getCompressibleMessages(topic);
   if (tail.length === 0) return false;
 
   isSummarizing = true;
@@ -843,13 +841,12 @@ async function compressTopic(topic, { force = false } = {}) {
   renderTopicList();
   if (topic.id === activeTopicId) renderMessages();
 
-  // Leaves the last 2 messages out of this checkpoint — renderMessages
-  // interleaves the finalized divider by this index, so it lands right
-  // before them, not at the very end (only the in-progress placeholder
-  // shows at the bottom, via hasPendingSummary in renderMessages). When
-  // forced, there's nothing left deliberately raw — everything just got
-  // folded in, so the divider correctly lands at the very end instead.
-  const cutoff = force ? topic.messages.length : topic.messages.length - 2;
+  // If nothing was excluded (short topic, or a tiny tail), the checkpoint
+  // covers everything up to now, and renderMessages' index-based divider
+  // placement lands it at the very end; otherwise it stops 2 messages short,
+  // matching whatever getCompressibleMessages actually included.
+  const excludedLastTwo = tail.length < fullTail.length;
+  const cutoff = excludedLastTwo ? topic.messages.length - 2 : topic.messages.length;
   const priorSummary = getLatestSummary(topic);
   let sourceText = "";
   if (priorSummary) {
@@ -933,13 +930,7 @@ async function toggleStarTopic(topicId, evt) {
     const ok = await compressTopic(topic);
     if (!ok && !getLatestSummary(topic)) return;
   } else if (!getLatestSummary(topic)) {
-    // Short topic (<=2 messages): the normal -2 rule leaves nothing
-    // compressible, which would otherwise permanently block starring a
-    // brand-new conversation. Force a one-off summary of everything it has
-    // instead of refusing.
-    if (getTailMessages(topic).length === 0) return; // truly empty, nothing to summarize
-    const ok = await compressTopic(topic, { force: true });
-    if (!ok) return;
+    return; // nothing to summarize (topic has no messages) and no existing summary to fall back on
   }
 
   topic.starred = true;
@@ -1382,7 +1373,8 @@ async function handleSaveSettings() {
 
   const rawThreshold = el.autoCompressThreshold.value.trim();
   const thresholdNum = Number(rawThreshold);
-  const autoCompressThreshold = rawThreshold && thresholdNum > 0 ? String(Math.floor(thresholdNum)) : "";
+  const autoCompressThreshold =
+    rawThreshold && thresholdNum > 0 ? String(Math.max(10000, Math.floor(thresholdNum))) : "";
 
   settings = {
     ...settings,

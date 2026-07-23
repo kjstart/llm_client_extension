@@ -52,7 +52,7 @@ const MESSAGES = {
     "settings.system_prompt": "System Prompt（可选）",
     "settings.system_prompt_placeholder": "你是一个乐于助人的助手。",
     "settings.auto_compress": "对话自动压缩阈值（字，留空关闭）",
-    "settings.auto_compress_hint": "发送新消息前，若当前话题可压缩部分（不含最近 2 条消息）超过这个字数，会先自动请求当前模型生成摘要，再继续发送。默认 96000，适合 DeepSeek-Pro 类模型；轻量/flash 类模型建议调低到约 64000。",
+    "settings.auto_compress_hint": "发送新消息前，若当前话题可压缩部分（不含最近 2 条消息，对话总数不足 10 条时不排除）超过这个字数，会先自动请求当前模型生成摘要，再继续发送。默认 96000，适合 DeepSeek-Pro 类模型；轻量/flash 类模型建议调低到约 64000。最小 10000。",
     "settings.extra_params": "额外参数（JSON，可选）",
     "settings.extra_params_hint":
       "合并进请求体，支持任意 OpenAI 兼容参数。<code>model</code>/<code>messages</code>/<code>stream</code> 由客户端管理无法覆盖；将某个标准参数设为 <code>null</code>（如 <code>{\"temperature\": null}</code>）可在本次请求中省略它。",
@@ -168,7 +168,7 @@ const MESSAGES = {
     "settings.system_prompt": "System Prompt (optional)",
     "settings.system_prompt_placeholder": "You are a helpful assistant.",
     "settings.auto_compress": "Auto-compress threshold (characters, blank to disable)",
-    "settings.auto_compress_hint": "Before sending, if the current chat's compressible content (excluding the last 2 messages) exceeds this length, its current model first generates a summary, then the message is sent. Defaults to 96000, suited to DeepSeek-Pro-class models; lower it to around 64000 for lightweight/flash-class models.",
+    "settings.auto_compress_hint": "Before sending, if the current chat's compressible content (excluding the last 2 messages — not excluded when the chat has fewer than 10 messages total) exceeds this length, its current model first generates a summary, then the message is sent. Defaults to 96000, suited to DeepSeek-Pro-class models; lower it to around 64000 for lightweight/flash-class models. Minimum 10000.",
     "settings.extra_params": "Extra Params (JSON, optional)",
     "settings.extra_params_hint":
       "Merged into the request body — any OpenAI-compatible parameter works. <code>model</code>/<code>messages</code>/<code>stream</code> are client-managed and cannot be overridden; set a standard param to <code>null</code> (e.g. <code>{\"temperature\": null}</code>) to omit it for the request.",

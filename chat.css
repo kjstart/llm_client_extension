@@ -138,6 +138,9 @@ html, body {
   white-space: nowrap;
   flex: 1;
 }
+.topic-title.hidden-flag {
+  font-style: italic;
+}
 
 .topic-rename-input {
   flex: 1;
