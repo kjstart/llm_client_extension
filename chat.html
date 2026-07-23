@@ -149,7 +149,7 @@
 
         <label class="field">
           <span data-i18n="settings.auto_compress">对话自动压缩阈值（字，留空关闭）</span>
-          <input id="autoCompressThreshold" type="number" min="1" step="100" placeholder="例如 6000" />
+          <input id="autoCompressThreshold" type="number" min="1" step="100" placeholder="例如 96000" />
           <small class="field-hint" data-i18n="settings.auto_compress_hint">发送新消息前，若当前话题未压缩的对话内容超过这个字数，会先自动请求当前模型生成摘要，再继续发送。</small>
         </label>
 
@@ -185,6 +185,13 @@
               <button id="changePasswordBtn" class="primary-btn small-btn" data-i18n="pwd.change_btn">修改密码</button>
               <button id="disablePasswordBtn" class="danger-btn small-btn" data-i18n="pwd.disable_btn">关闭密码保护</button>
             </div>
+
+            <label class="toggle-row">
+              <input type="checkbox" id="hiddenMessagesToggle" class="toggle-switch-input" />
+              <span class="toggle-switch"></span>
+              <span data-i18n="hidden.toggle_label">使用隐藏消息代替锁屏密码（数据也会被加密）</span>
+            </label>
+            <small class="field-hint" data-i18n="hidden.toggle_hint">开启后，打开应用不再显示锁屏密码页面；被标记为隐藏的对话会在空闲锁定或重新打开应用时从列表中消失（仍以加密形式保存），需要在对话搜索框上连续点击三下并输入密码才能找回。关闭此开关需要先输入当前密码解锁所有隐藏对话。</small>
           </div>
 
           <div id="passwordMsg" class="password-msg"></div>
@@ -210,6 +217,25 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
+
+  <div id="hiddenUnlockModal" class="modal-overlay hidden">
+    <div class="modal hidden-unlock-modal">
+      <div class="modal-header">
+        <h2 data-i18n="hidden.unlock_title">解锁隐藏对话</h2>
+        <button id="closeHiddenUnlockBtn" class="icon-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span data-i18n="hidden.unlock_password_label">密码</span>
+          <input id="hiddenUnlockPassword" type="password" autocomplete="current-password" />
+        </label>
+        <div id="hiddenUnlockError" class="lock-error"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="hiddenUnlockConfirmBtn" class="primary-btn" data-i18n="hidden.unlock_confirm">解锁</button>
+      </div>
+    </div>
+  </div>
 
   <script src="i18n.js"></script>
   <script src="crypto.js"></script>

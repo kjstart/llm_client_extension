@@ -15,7 +15,11 @@ const DEFAULT_SETTINGS = {
   sidebarCollapsed: false,
   chatWidthLevel: "normal", // "narrow" (60%) | "normal" (80%) | "wide" (100%)
   autoLockMinutes: 2,
-  autoCompressThreshold: "", // raw string; "" = auto-compression disabled
+  autoCompressThreshold: "96000", // raw string; "" = auto-compression disabled
+  // Replaces the classic full-app lock screen with per-topic hiding: the app
+  // never shows a lock screen, but topics flagged `hidden` disappear (and are
+  // encrypted separately) whenever the idle-lock timer fires or on launch.
+  hiddenMessagesEnabled: false,
 };
 
 // Request-body keys the client always controls; extra params can never override them.
@@ -29,14 +33,28 @@ const FONT_SIZE_STEP = 1;
 // Abort if no response starts, or the stream stalls, within this window.
 const REQUEST_TIMEOUT_MS = 60 * 1000;
 const MAX_STARRED_TOPICS = 5;
-const SUMMARY_SYSTEM_INSTRUCTION =
-  "请将以下对话内容压缩为一段结构化摘要，用于替代原始对话历史。请按以下几点整理（没有对应内容可省略该点）：\n" +
-  "1. 这段对话在讨论什么，用户的目的/需求是什么\n" +
-  "2. 已经得出的结论、决定，以及做出这些决定的原因\n" +
-  "3. 被提出但最终被否决的方案，以及原因\n" +
-  "4. 用户明确表达过的偏好、约束或背景信息\n" +
-  "5. 还没有解决的问题，或者后续可能要接着聊的方向\n" +
-  "删除寒暄、重复内容和无关的过渡语。请使用当前对话所使用的语言生成摘要。只输出摘要正文，不要加标题或额外说明。";
+// 2% of the user's configured auto-compress threshold, clamped to a sane
+// range — used as a target length so the summary itself doesn't grow
+// unbounded. Falls back to a mid-range default if no threshold is set
+// (e.g. a star-triggered compression on a topic with auto-compress off).
+function suggestedSummaryLength() {
+  const threshold = Number(settings.autoCompressThreshold);
+  const base = threshold > 0 ? threshold * 0.02 : 1000;
+  return Math.round(Math.min(5000, Math.max(200, base)));
+}
+
+function buildSummarySystemInstruction() {
+  return (
+    "请将以下对话内容压缩为一段结构化摘要，用于替代原始对话历史。请按以下几点整理（没有对应内容可省略该点）：\n" +
+    "1. 这段对话在讨论什么，用户的目的/需求是什么\n" +
+    "2. 已经得出的结论、决定，以及做出这些决定的原因\n" +
+    "3. 被提出但最终被否决的方案，以及原因\n" +
+    "4. 用户明确表达过的偏好、约束或背景信息\n" +
+    "5. 还没有解决的问题，或者后续可能要接着聊的方向\n" +
+    "删除寒暄、重复内容和无关的过渡语。请使用当前对话所使用的语言生成摘要。" +
+    `摘要正文请控制在约 ${suggestedSummaryLength()} 字左右。只输出摘要正文，不要加标题或额外说明。`
+  );
+}
 
 let settings = { ...DEFAULT_SETTINGS };
 let topics = [];
@@ -63,6 +81,10 @@ let activeRequest = null; // { topicId: string, assistantText: string, bubble: H
 
 // cryptoState is non-null only while a password-protected session is unlocked.
 let cryptoState = null; // { key: CryptoKey, salt: Uint8Array }
+// Whether a password is currently configured at all — distinct from
+// cryptoState, which in hidden-messages mode may be null (no key cached yet
+// this session) even though a password has genuinely been set up.
+let passwordIsSet = false;
 let idleTimer = null;
 let isAppLocked = false;
 const composingInputs = new WeakSet();
@@ -115,6 +137,7 @@ const el = {
   changePasswordBtn: document.getElementById("changePasswordBtn"),
   disablePasswordBtn: document.getElementById("disablePasswordBtn"),
   passwordMsg: document.getElementById("passwordMsg"),
+  hiddenMessagesToggle: document.getElementById("hiddenMessagesToggle"),
 
   exportAllBtn: document.getElementById("exportAllBtn"),
   importBtn: document.getElementById("importBtn"),
@@ -127,11 +150,21 @@ const el = {
   unlockBtn: document.getElementById("unlockBtn"),
 
   toast: document.getElementById("toast"),
+
+  hiddenUnlockModal: document.getElementById("hiddenUnlockModal"),
+  closeHiddenUnlockBtn: document.getElementById("closeHiddenUnlockBtn"),
+  hiddenUnlockPassword: document.getElementById("hiddenUnlockPassword"),
+  hiddenUnlockError: document.getElementById("hiddenUnlockError"),
+  hiddenUnlockConfirmBtn: document.getElementById("hiddenUnlockConfirmBtn"),
 };
 
 // ---------- Storage ----------
 
 async function persistState() {
+  if (settings.hiddenMessagesEnabled) {
+    await persistHiddenMode();
+    return;
+  }
   if (cryptoState) {
     const vault = await encryptWithKey(cryptoState.key, { settings, topics });
     await chrome.storage.local.set({ vault });
@@ -140,6 +173,44 @@ async function persistState() {
   } else {
     await chrome.storage.local.set({ settings, topics });
   }
+}
+
+// Hidden-messages mode: settings + non-hidden topics are always stored
+// plain (the lock screen is never shown, so there's no password-derived key
+// available at launch to decrypt anything with). Hidden-flagged topics are
+// swept into an encrypted hiddenVault on *every* save — not just when the
+// idle-lock timer fires — so on-disk storage never has a hidden topic
+// sitting in plaintext, even if the browser closes before that timer ever
+// gets a chance to run. They stay fully visible/editable in the live
+// `topics` array in memory until lockHiddenMessages() actually removes them.
+async function persistHiddenMode() {
+  const hiddenTopics = topics.filter((t) => t.hidden);
+  const visibleTopics = topics.filter((t) => !t.hidden);
+
+  if (hiddenTopics.length === 0 || !cryptoState) {
+    // Nothing to encrypt yet (no key cached this session means no topic can
+    // have been flagged hidden yet either — that always requires the key).
+    await chrome.storage.local.set({ settings, topics: visibleTopics });
+    return;
+  }
+
+  const data = await chrome.storage.local.get(["hiddenVault"]);
+  let combined = hiddenTopics;
+  if (data.hiddenVault) {
+    try {
+      const existing = await decryptWithKey(cryptoState.key, data.hiddenVault.iv, data.hiddenVault.ciphertext);
+      // A topic can be both "already vaulted from a previous save" and
+      // "currently live" (e.g. it was revealed, then re-hidden, then edited)
+      // — keep the live version for those, plus whatever else was vaulted.
+      const liveIds = new Set(hiddenTopics.map((topic) => topic.id));
+      combined = existing.filter((topic) => !liveIds.has(topic.id)).concat(hiddenTopics);
+    } catch (e) {
+      // Same key that encrypted it, so this shouldn't happen; if it does,
+      // don't let it block saving the current session's hidden topics.
+    }
+  }
+  const hiddenVault = await encryptWithKey(cryptoState.key, combined);
+  await chrome.storage.local.set({ hiddenVault, settings, topics: visibleTopics });
 }
 
 async function saveSettings() {
@@ -161,6 +232,7 @@ function normalizeTopic(topic) {
   if (!Array.isArray(topic.summaries)) topic.summaries = [];
   if (typeof topic.starred !== "boolean") topic.starred = false;
   if (typeof topic.starredAt !== "number") topic.starredAt = null;
+  if (typeof topic.hidden !== "boolean") topic.hidden = false;
   return topic;
 }
 
@@ -174,6 +246,7 @@ function createTopic() {
     summaries: [],
     starred: false,
     starredAt: null,
+    hidden: false,
   };
   topics.unshift(topic);
   activeTopicId = topic.id;
@@ -313,6 +386,26 @@ function renderTopicList() {
 
       const actions = document.createElement("div");
       actions.className = "topic-actions";
+
+      if (settings.hiddenMessagesEnabled) {
+        const hideBtn = document.createElement("button");
+        hideBtn.className = "topic-hidden-toggle" + (topic.hidden ? " active" : "");
+        hideBtn.title = t(topic.hidden ? "hidden.unhide_title" : "hidden.hide_title");
+        // Same inherited color as the other buttons in both states — a
+        // colored icon would be invisible against the active/blue row
+        // background. "Hidden" is conveyed only by the slash, not by color.
+        hideBtn.innerHTML = topic.hidden
+          ? '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+            '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+            '<circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+            '<line x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>'
+          : '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+            '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' +
+            '<circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
+        hideBtn.addEventListener("click", (e) => toggleHiddenTopic(topic.id, e));
+        actions.appendChild(hideBtn);
+      }
+
       actions.append(del, starBtn);
 
       // While this topic is generating (even in the background, not the one
@@ -477,9 +570,17 @@ function renderMessages() {
   }
   el.messages.classList.remove("is-empty");
 
+  // Displayed 2 messages later than the real afterMessageIndex cutoff: that
+  // lands the divider right where it first appeared as the pending "在生成
+  // 摘要..." placeholder (right under the newest message at the moment
+  // compression was triggered, since the cutoff itself excludes the last 2
+  // messages) — it then stays fixed there rather than jumping once the
+  // summary finishes. The stored afterMessageIndex itself (used by
+  // getTailMessages/getCompressibleMessages) is unaffected by this — this
+  // is purely a display offset.
   let summaryIdx = 0;
   topic.messages.forEach((msg, index) => {
-    while (summaryIdx < topic.summaries.length && topic.summaries[summaryIdx].afterMessageIndex === index) {
+    while (summaryIdx < topic.summaries.length && topic.summaries[summaryIdx].afterMessageIndex + 2 === index) {
       appendSummaryDivider(topic.summaries[summaryIdx]);
       summaryIdx += 1;
     }
@@ -649,20 +750,48 @@ function getLatestSummary(topic) {
 }
 
 // The "active tail": messages not yet folded into a summary. This is what
-// actually gets sent (alongside the latest summary, if any) and what the
-// auto-compress length check measures.
+// actually gets sent, alongside the latest summary (if any) — always
+// including the last 2 raw messages verbatim, since those are deliberately
+// kept out of compression (see getCompressibleMessages).
 function getTailMessages(topic) {
   const latest = getLatestSummary(topic);
   return latest ? topic.messages.slice(latest.afterMessageIndex) : topic.messages;
 }
 
-function tailContentLength(topic) {
-  return getTailMessages(topic).reduce((sum, m) => sum + (m.content ? m.content.length : 0), 0);
+// The portion of the tail that's actually eligible to be folded into a new
+// summary: everything except the last 2 raw messages. Those 2 are always
+// left out of compression and sent verbatim, so the most recent exchange
+// never gets blurred by summarization, and the prefix sent to the model
+// only grows by one message per turn between compressions (better prefix
+// cache reuse) instead of being rebuilt up to the very latest message.
+// Skipped entirely for short conversations (<10 messages total) — there's
+// no rolling-cache benefit to protect yet, and always excluding 2 messages
+// would otherwise permanently block a brand-new topic from ever getting a
+// summary (e.g. when starring it).
+function getCompressibleMessages(topic) {
+  const tail = getTailMessages(topic);
+  if (topic.messages.length < 10) return tail;
+  return tail.length > 2 ? tail.slice(0, tail.length - 2) : [];
 }
 
+function compressibleContentLength(topic) {
+  return getCompressibleMessages(topic).reduce((sum, m) => sum + (m.content ? m.content.length : 0), 0);
+}
+
+// Hidden and non-hidden topics have entirely separate star pools: a hidden
+// topic's summary is only ever injected into other hidden topics, and a
+// non-hidden topic's only into other non-hidden ones — never across the
+// boundary, so a starred sensitive/hidden topic can't leak its content into
+// the context of an ordinary, fully-visible conversation.
 function starredTopicsForInjection(currentTopic) {
   return topics
-    .filter((cand) => cand.starred && cand.id !== currentTopic.id && getLatestSummary(cand))
+    .filter(
+      (cand) =>
+        cand.starred &&
+        cand.id !== currentTopic.id &&
+        cand.hidden === currentTopic.hidden &&
+        getLatestSummary(cand)
+    )
     .sort((a, b) => (a.starredAt || 0) - (b.starredAt || 0));
 }
 
@@ -691,16 +820,22 @@ function buildApiMessages(topic) {
   return apiMessages;
 }
 
-// Summarizes a topic's un-summarized tail (rolled on top of its previous
-// summary, if any) via one non-streaming request to its own model, then
-// stores the result as a new checkpoint. Used both by the auto-compress
-// threshold check and by star-triggering a topic with no summary yet.
-async function compressTopic(topic) {
+// Summarizes a topic's compressible tail — everything since the last summary
+// except the most recent 2 raw messages, which stay untouched (see
+// getCompressibleMessages) — rolled on top of the previous summary, if any,
+// via one non-streaming request to its own model, then stores the result as
+// a new checkpoint. Used both by the auto-compress threshold check and by
+// star-triggering a topic with no summary yet.
+// `force: true` ignores the last-2-messages exclusion and summarizes the
+// entire tail instead — used when starring a topic that's too short (<=2
+// messages) for the normal rule to ever produce anything compressible,
+// which would otherwise permanently block it from ever getting a summary.
+async function compressTopic(topic, { force = false } = {}) {
   if (!settings.apiKey) {
     openSettings();
     return false;
   }
-  const tail = getTailMessages(topic);
+  const tail = force ? getTailMessages(topic) : getCompressibleMessages(topic);
   if (tail.length === 0) return false;
 
   isSummarizing = true;
@@ -708,7 +843,13 @@ async function compressTopic(topic) {
   renderTopicList();
   if (topic.id === activeTopicId) renderMessages();
 
-  const cutoff = topic.messages.length;
+  // Leaves the last 2 messages out of this checkpoint — renderMessages
+  // interleaves the finalized divider by this index, so it lands right
+  // before them, not at the very end (only the in-progress placeholder
+  // shows at the bottom, via hasPendingSummary in renderMessages). When
+  // forced, there's nothing left deliberately raw — everything just got
+  // folded in, so the divider correctly lands at the very end instead.
+  const cutoff = force ? topic.messages.length : topic.messages.length - 2;
   const priorSummary = getLatestSummary(topic);
   let sourceText = "";
   if (priorSummary) {
@@ -722,7 +863,7 @@ async function compressTopic(topic) {
     {
       model: topic.model || settings.defaultModel,
       messages: [
-        { role: "system", content: SUMMARY_SYSTEM_INSTRUCTION },
+        { role: "system", content: buildSummarySystemInstruction() },
         { role: "user", content: sourceText },
       ],
       stream: false,
@@ -775,22 +916,30 @@ async function toggleStarTopic(topicId, evt) {
     return;
   }
 
-  const starredCount = topics.filter((cand) => cand.starred).length;
+  // Separate cap per pool (hidden vs. non-hidden) — starring a hidden topic
+  // doesn't compete with the 5 slots used by ordinary starred topics.
+  const starredCount = topics.filter((cand) => cand.starred && cand.hidden === topic.hidden).length;
   if (starredCount >= MAX_STARRED_TOPICS) {
     showToast(t("star.max_reached"));
     return;
   }
 
-  // Always (re)generate before starring if there's un-summarized tail content,
+  // Always (re)generate before starring if there's compressible tail content,
   // rather than only when no summary exists yet — in a long conversation the
   // user may star it well after the last checkpoint, and a stale summary would
   // silently miss everything said since. If the refresh attempt fails, fall
   // back to an existing summary (if any) rather than blocking the star.
-  if (getTailMessages(topic).length > 0) {
+  if (getCompressibleMessages(topic).length > 0) {
     const ok = await compressTopic(topic);
     if (!ok && !getLatestSummary(topic)) return;
   } else if (!getLatestSummary(topic)) {
-    return;
+    // Short topic (<=2 messages): the normal -2 rule leaves nothing
+    // compressible, which would otherwise permanently block starring a
+    // brand-new conversation. Force a one-off summary of everything it has
+    // instead of refusing.
+    if (getTailMessages(topic).length === 0) return; // truly empty, nothing to summarize
+    const ok = await compressTopic(topic, { force: true });
+    if (!ok) return;
   }
 
   topic.starred = true;
@@ -860,7 +1009,7 @@ async function sendMessage(text, queuedId = null) {
 
   const compressThreshold = Number(settings.autoCompressThreshold);
   const needsAutoCompress =
-    settings.autoCompressThreshold && compressThreshold > 0 && tailContentLength(topic) > compressThreshold;
+    settings.autoCompressThreshold && compressThreshold > 0 && compressibleContentLength(topic) > compressThreshold;
 
   // Fresh send (not a queue replay) that needs compressing first: park the
   // message in the per-topic send queue right away — same queued-bubble UI
@@ -1366,13 +1515,18 @@ async function handleImportFileSelected() {
 
 function refreshPasswordUI() {
   el.passwordMsg.textContent = "";
-  if (cryptoState) {
+  // passwordIsSet (not cryptoState) decides which form to show: in hidden-
+  // messages mode a password can be fully configured while cryptoState is
+  // still null (no key cached this session yet), and this form must still
+  // read as "protection enabled", not prompt to set up a new password.
+  if (passwordIsSet) {
     el.passwordStatus.textContent = t("pwd.status_enabled");
     el.passwordSetupForm.classList.add("hidden");
     el.passwordManageForm.classList.remove("hidden");
     el.currentPasswordForChange.value = "";
     el.changePassword1.value = "";
     el.changePassword2.value = "";
+    el.hiddenMessagesToggle.checked = !!settings.hiddenMessagesEnabled;
   } else {
     el.passwordStatus.textContent = t("pwd.status_disabled");
     el.passwordSetupForm.classList.remove("hidden");
@@ -1401,8 +1555,10 @@ async function handleEnablePassword() {
   const salt = randomBytes(16);
   const key = await deriveKeyFromPassword(p1, salt);
   cryptoState = { key, salt };
+  passwordIsSet = true;
 
-  await chrome.storage.local.set({ vaultSalt: bufToBase64(salt) });
+  const passwordCheck = await encryptWithKey(key, { check: true });
+  await chrome.storage.local.set({ vaultSalt: bufToBase64(salt), passwordCheck });
   await persistState();
 
   resetIdleTimer();
@@ -1410,12 +1566,19 @@ async function handleEnablePassword() {
   refreshPasswordUI();
 }
 
+// Mode-agnostic password check: tests against a small dedicated encrypted
+// blob rather than the full vault, since in hidden-messages mode the vault
+// may not exist at all (settings/topics are stored plain, only hiddenVault
+// is encrypted, and that may not exist yet either). Reads vaultSalt fresh
+// from storage rather than relying on cryptoState already being populated,
+// since callers may run before any key has been cached this session.
 async function verifyCurrentPassword(password) {
-  const data = await chrome.storage.local.get(["vault"]);
-  if (!data.vault) return false;
+  const data = await chrome.storage.local.get(["vaultSalt", "passwordCheck"]);
+  if (!data.vaultSalt || !data.passwordCheck) return false;
   try {
-    const testKey = await deriveKeyFromPassword(password, cryptoState.salt);
-    await decryptWithKey(testKey, data.vault.iv, data.vault.ciphertext);
+    const salt = new Uint8Array(base64ToBuf(data.vaultSalt));
+    const testKey = await deriveKeyFromPassword(password, salt);
+    await decryptWithKey(testKey, data.passwordCheck.iv, data.passwordCheck.ciphertext);
     return true;
   } catch (e) {
     return false;
@@ -1444,10 +1607,28 @@ async function handleChangePassword() {
     return;
   }
 
+  // Carry the hidden vault forward (if any) so it stays decryptable after the
+  // password/salt rotate below — otherwise any not-yet-revealed hidden topics
+  // would become permanently unrecoverable.
+  let migratedHiddenTopics = null;
+  if (settings.hiddenMessagesEnabled) {
+    const data = await chrome.storage.local.get(["vaultSalt", "hiddenVault"]);
+    if (data.hiddenVault) {
+      const oldSalt = new Uint8Array(base64ToBuf(data.vaultSalt));
+      const oldKey = await deriveKeyFromPassword(oldP, oldSalt);
+      migratedHiddenTopics = await decryptWithKey(oldKey, data.hiddenVault.iv, data.hiddenVault.ciphertext);
+    }
+  }
+
   const newSalt = randomBytes(16);
   const newKey = await deriveKeyFromPassword(newP1, newSalt);
   cryptoState = { key: newKey, salt: newSalt };
-  await chrome.storage.local.set({ vaultSalt: bufToBase64(newSalt) });
+  const passwordCheck = await encryptWithKey(newKey, { check: true });
+  const updates = { vaultSalt: bufToBase64(newSalt), passwordCheck };
+  if (migratedHiddenTopics) {
+    updates.hiddenVault = await encryptWithKey(newKey, migratedHiddenTopics);
+  }
+  await chrome.storage.local.set(updates);
   await persistState();
 
   showPasswordMsg(t("pwd.changed_msg"));
@@ -1455,6 +1636,11 @@ async function handleChangePassword() {
 }
 
 async function handleDisablePassword() {
+  if (settings.hiddenMessagesEnabled) {
+    showPasswordMsg(t("pwd.disable_requires_hidden_off"));
+    return;
+  }
+
   const oldP = el.currentPasswordForChange.value;
   if (!(await verifyCurrentPassword(oldP))) {
     showPasswordMsg(t("pwd.current_wrong"));
@@ -1462,12 +1648,191 @@ async function handleDisablePassword() {
   }
 
   cryptoState = null;
+  passwordIsSet = false;
   await chrome.storage.local.set({ settings, topics });
-  await chrome.storage.local.remove(["vault", "vaultSalt"]);
+  await chrome.storage.local.remove(["vault", "vaultSalt", "passwordCheck"]);
   clearTimeout(idleTimer);
 
   showPasswordMsg(t("pwd.disabled_msg"));
   refreshPasswordUI();
+}
+
+// ---------- Hidden messages mode ----------
+
+// Enabling requires no extra prompt: reaching Settings in classic mode
+// already means the app was unlocked (cryptoState is populated), and this
+// just changes how persistState()/idle-lock behave going forward.
+async function handleEnableHiddenMessages() {
+  if (!cryptoState) {
+    el.hiddenMessagesToggle.checked = false;
+    return;
+  }
+  settings.hiddenMessagesEnabled = true;
+  // Switch off the whole-app vault immediately — from here on, persistState()
+  // stores settings/topics plain and only hidden-flagged topics get encrypted.
+  await chrome.storage.local.set({ settings, topics });
+  await chrome.storage.local.remove(["vault"]);
+  showPasswordMsg(t("hidden.enabled_msg"));
+  renderTopicList();
+}
+
+// Disabling requires proving the current password (reusing the same field
+// used for changing/disabling password protection) and decrypts+restores
+// every still-hidden topic before turning the feature off, so nothing is
+// ever silently stranded behind a disabled feature.
+async function handleDisableHiddenMessages() {
+  const password = el.currentPasswordForChange.value;
+  if (!password) {
+    showPasswordMsg(t("hidden.enter_password_to_disable"));
+    el.hiddenMessagesToggle.checked = true;
+    return;
+  }
+  if (!(await verifyCurrentPassword(password))) {
+    showPasswordMsg(t("pwd.current_wrong"));
+    el.hiddenMessagesToggle.checked = true;
+    return;
+  }
+
+  const data = await chrome.storage.local.get(["vaultSalt", "hiddenVault"]);
+  const salt = new Uint8Array(base64ToBuf(data.vaultSalt));
+  const key = await deriveKeyFromPassword(password, salt);
+  cryptoState = { key, salt };
+
+  if (data.hiddenVault) {
+    const restored = (await decryptWithKey(key, data.hiddenVault.iv, data.hiddenVault.ciphertext)).map(
+      normalizeTopic
+    );
+    const existingIds = new Set(topics.map((topic) => topic.id));
+    topics = topics.concat(restored.filter((topic) => !existingIds.has(topic.id)));
+  }
+  for (const topic of topics) topic.hidden = false;
+  topics.sort((a, b) => b.createdAt - a.createdAt);
+  await chrome.storage.local.remove(["hiddenVault"]);
+
+  settings.hiddenMessagesEnabled = false;
+  await persistState(); // now re-encrypts settings+topics into the classic vault
+
+  renderTopicList();
+  renderMessages();
+  updateHeader();
+  resetIdleTimer();
+  showPasswordMsg(t("hidden.disabled_msg"));
+}
+
+// ---------- Eye toggle + hidden-unlock modal ----------
+
+// Resolves once the user confirms or cancels the password prompt.
+let hiddenUnlockResolve = null;
+// "verify": just prove the password and cache the key (used when marking a
+// topic hidden for the first time this session — nothing to merge back).
+// "reveal": also decrypts hiddenVault and merges its topics back into view
+// (used by the triple-click gesture on the search box).
+let hiddenUnlockPurpose = null;
+
+function promptHiddenUnlock(purpose) {
+  return new Promise((resolve) => {
+    hiddenUnlockPurpose = purpose;
+    hiddenUnlockResolve = resolve;
+    el.hiddenUnlockPassword.value = "";
+    el.hiddenUnlockError.textContent = "";
+    el.hiddenUnlockModal.classList.remove("hidden");
+    el.hiddenUnlockPassword.focus();
+  });
+}
+
+function closeHiddenUnlockModal(result) {
+  el.hiddenUnlockModal.classList.add("hidden");
+  const resolve = hiddenUnlockResolve;
+  hiddenUnlockResolve = null;
+  hiddenUnlockPurpose = null;
+  if (resolve) resolve(result);
+}
+
+async function handleHiddenUnlockConfirm() {
+  const password = el.hiddenUnlockPassword.value;
+  const data = await chrome.storage.local.get(["vaultSalt", "passwordCheck", "hiddenVault"]);
+  if (!data.vaultSalt || !data.passwordCheck) {
+    el.hiddenUnlockError.textContent = t("unlock.no_data");
+    return;
+  }
+  const salt = new Uint8Array(base64ToBuf(data.vaultSalt));
+  const key = await deriveKeyFromPassword(password, salt);
+  try {
+    await decryptWithKey(key, data.passwordCheck.iv, data.passwordCheck.ciphertext);
+  } catch (e) {
+    el.hiddenUnlockError.textContent = t("unlock.wrong");
+    return;
+  }
+
+  cryptoState = { key, salt };
+
+  if (hiddenUnlockPurpose === "reveal" && data.hiddenVault) {
+    const restored = (await decryptWithKey(key, data.hiddenVault.iv, data.hiddenVault.ciphertext)).map(
+      normalizeTopic
+    );
+    // Defensive: never end up with two entries for the same id, however that
+    // might happen.
+    const existingIds = new Set(topics.map((topic) => topic.id));
+    topics = topics.concat(restored.filter((topic) => !existingIds.has(topic.id)));
+    topics.sort((a, b) => b.createdAt - a.createdAt);
+    // Persist immediately: this re-encrypts the still-hidden topics (their
+    // `hidden` flag is untouched by revealing — they stay visible for the
+    // rest of this session but will be swept away again at the next lock)
+    // into a fresh hiddenVault via persistHiddenMode(). Not calling this
+    // here was the bug — it left the old hiddenVault deleted with nothing
+    // written back yet, so anything revealed but not otherwise re-saved
+    // (e.g. by sending a message) before the next lock event was lost for
+    // good.
+    await saveTopics();
+    renderTopicList();
+    renderMessages();
+    updateHeader();
+  }
+
+  resetIdleTimer();
+  closeHiddenUnlockModal(true);
+}
+
+async function toggleHiddenTopic(topicId, evt) {
+  evt.stopPropagation();
+  const topic = topics.find((cand) => cand.id === topicId);
+  if (!topic) return;
+
+  if (topic.hidden) {
+    topic.hidden = false;
+    saveTopics();
+    renderTopicList();
+    return;
+  }
+
+  if (!cryptoState) {
+    const ok = await promptHiddenUnlock("verify");
+    if (!ok) return;
+  }
+
+  topic.hidden = true;
+  saveTopics();
+  renderTopicList();
+  resetIdleTimer();
+}
+
+// Triple-click (3 clicks within ~600ms) on the topic search box is the
+// secret gesture to reveal hidden topics — deliberately not surfaced
+// anywhere else in the UI.
+let searchClickCount = 0;
+let searchClickTimer = null;
+function handleSearchBoxClick() {
+  if (!settings.hiddenMessagesEnabled) return;
+  searchClickCount += 1;
+  clearTimeout(searchClickTimer);
+  searchClickTimer = setTimeout(() => {
+    searchClickCount = 0;
+  }, 600);
+  if (searchClickCount >= 3) {
+    searchClickCount = 0;
+    clearTimeout(searchClickTimer);
+    void promptHiddenUnlock("reveal");
+  }
 }
 
 // ---------- Lock screen ----------
@@ -1534,7 +1899,37 @@ function resetIdleTimer() {
     1440,
     Math.max(1, Number(settings.autoLockMinutes) || DEFAULT_SETTINGS.autoLockMinutes)
   );
-  idleTimer = setTimeout(lockApp, minutes * 60 * 1000);
+  const handler = settings.hiddenMessagesEnabled ? lockHiddenMessages : lockApp;
+  idleTimer = setTimeout(handler, minutes * 60 * 1000);
+}
+
+// Hidden-messages mode's equivalent of lockApp(): no lock screen, nothing
+// else interrupted. Hidden-flagged topics are already kept encrypted in
+// hiddenVault by every persistState() call, so this just needs to drop them
+// from the live `topics` array and clear the cached key — no re-encryption
+// necessary here.
+function lockHiddenMessages() {
+  clearTimeout(idleTimer);
+  if (!cryptoState) return;
+  const hiddenIds = new Set(topics.filter((t) => t.hidden).map((t) => t.id));
+  if (hiddenIds.size === 0) {
+    cryptoState = null;
+    return;
+  }
+  if (isStreaming && abortController && activeRequest && hiddenIds.has(activeRequest.topicId)) {
+    abortReason = "lock";
+    abortController.abort();
+  }
+  topics = topics.filter((t) => !hiddenIds.has(t.id));
+  // Always land on the first remaining topic once hiding triggers, rather
+  // than only when the topic being viewed happened to be one of the hidden
+  // ones — keeps the post-hide state predictable regardless of what was on
+  // screen at the time.
+  activeTopicId = topics.length ? topics[0].id : null;
+  cryptoState = null;
+  renderTopicList();
+  renderMessages();
+  updateHeader();
 }
 
 ["click", "keydown", "mousemove", "input"].forEach((evt) => {
@@ -1551,6 +1946,7 @@ el.topicSearchInput.addEventListener("input", () => {
   topicSearchQuery = el.topicSearchInput.value;
   renderTopicList();
 });
+el.topicSearchInput.addEventListener("click", handleSearchBoxClick);
 el.settingsBtn.addEventListener("click", openSettings);
 el.sidebarToggleBtn.addEventListener("click", toggleSidebar);
 el.fontDecreaseBtn.addEventListener("click", () => adjustFontSize(-FONT_SIZE_STEP));
@@ -1573,6 +1969,13 @@ el.modelList.addEventListener("input", () => {
 el.enablePasswordBtn.addEventListener("click", handleEnablePassword);
 el.changePasswordBtn.addEventListener("click", handleChangePassword);
 el.disablePasswordBtn.addEventListener("click", handleDisablePassword);
+el.hiddenMessagesToggle.addEventListener("change", () => {
+  if (el.hiddenMessagesToggle.checked) {
+    void handleEnableHiddenMessages();
+  } else {
+    void handleDisableHiddenMessages();
+  }
+});
 
 el.unlockBtn.addEventListener("click", handleUnlock);
 installImeGuard(el.unlockPassword);
@@ -1581,6 +1984,17 @@ el.unlockPassword.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     handleUnlock();
+  }
+});
+
+el.hiddenUnlockConfirmBtn.addEventListener("click", handleHiddenUnlockConfirm);
+el.closeHiddenUnlockBtn.addEventListener("click", () => closeHiddenUnlockModal(false));
+installImeGuard(el.hiddenUnlockPassword);
+el.hiddenUnlockPassword.addEventListener("keydown", (e) => {
+  if (isImeConfirming(e)) return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    handleHiddenUnlockConfirm();
   }
 });
 
@@ -1650,6 +2064,7 @@ function startApp() {
 (async function init() {
   applyI18n();
   const data = await chrome.storage.local.get(["vaultSalt", "vault", "settings", "topics"]);
+  passwordIsSet = !!data.vaultSalt;
   if (data.vaultSalt && data.vault) {
     showLockScreen();
     return;
