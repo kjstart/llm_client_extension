@@ -277,10 +277,11 @@ function selectTopic(id) {
   updateHeader();
 }
 
-function deleteTopic(id, evt) {
+async function deleteTopic(id, evt) {
   evt.stopPropagation();
   const idx = topics.findIndex((t) => t.id === id);
   if (idx === -1) return;
+  const wasHidden = topics[idx].hidden;
   topics.splice(idx, 1);
   queuedMessages = queuedMessages.filter((message) => message.topicId !== id);
   unreadTopicIds.delete(id);
@@ -289,10 +290,44 @@ function deleteTopic(id, evt) {
     if (activeTopicId) markTopicRead(activeTopicId);
   }
   if (confirmingDeleteTopicId === id) confirmingDeleteTopicId = null;
-  saveTopics();
+  // persistHiddenMode()'s merge logic can't tell "deleted" apart from "still
+  // locked away, just not loaded this session" — both look like "not in the
+  // live hiddenTopics list" — so a deleted hidden topic's encrypted copy
+  // would otherwise survive untouched in hiddenVault and reappear on the
+  // next reveal. Scrub it explicitly *before* the regular save, since
+  // saveTopics() below may also read/rewrite hiddenVault (if other hidden
+  // topics still exist) — running them out of order could let a save that
+  // read the vault first clobber this purge with stale merged data.
+  if (wasHidden) {
+    await purgeDeletedHiddenTopic(id);
+  }
+  await saveTopics();
   renderTopicList();
   renderMessages();
   updateHeader();
+}
+
+// Removes a single topic id from hiddenVault directly, independent of the
+// normal save flow, since a delete needs to definitively erase it rather
+// than have persistHiddenMode's merge potentially resurrect it.
+async function purgeDeletedHiddenTopic(id) {
+  if (!cryptoState) return; // shouldn't happen: a live hidden topic implies a cached key
+  const data = await chrome.storage.local.get(["hiddenVault"]);
+  if (!data.hiddenVault) return;
+  try {
+    const existing = await decryptWithKey(cryptoState.key, data.hiddenVault.iv, data.hiddenVault.ciphertext);
+    const filtered = existing.filter((topic) => topic.id !== id);
+    if (filtered.length === existing.length) return; // wasn't vaulted anyway
+    if (filtered.length === 0) {
+      await chrome.storage.local.remove(["hiddenVault"]);
+    } else {
+      const hiddenVault = await encryptWithKey(cryptoState.key, filtered);
+      await chrome.storage.local.set({ hiddenVault });
+    }
+  } catch (e) {
+    // Can't decrypt with the current key — leave the vault alone rather than
+    // risk destroying data we can't verify.
+  }
 }
 
 function requestDeleteTopic(id, evt) {
